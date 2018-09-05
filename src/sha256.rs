@@ -164,7 +164,7 @@ fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x
     *h = temp1 + temp2;
 }
 
-pub(crate) fn update(ctx: &mut SHA256Context, input: *const [u8; 64], length: &mut u32) {
+pub(crate) fn update(ctx: &mut SHA256Context, input: *mut [u8; 64], length: &mut u32) {
     let left: u32 = ctx.total[0] & 0x3F;
     let fill: u32 = 64 - left;
 
@@ -188,7 +188,7 @@ pub(crate) fn update(ctx: &mut SHA256Context, input: *const [u8; 64], length: &m
         unsafe { input.add(64) };
     }
 
-    if length != 0 {
+    if *length != 0 {
         // memcpy( (void *) (ctx->buffer + left),
         //         (void *) input, length );
     }
