@@ -1,4 +1,4 @@
-
+use std::ptr::copy_nonoverlapping;
 
 pub(crate) struct SHA256Context {
     pub(crate) total: [u32; 2],
@@ -164,9 +164,10 @@ fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x
     *h = temp1 + temp2;
 }
 
-pub(crate) fn update(ctx: &mut SHA256Context, input: *mut [u8; 64], length: &mut u32) {
-    let left: u32 = ctx.total[0] & 0x3F;
+pub(crate) fn update(ctx: &mut SHA256Context, input: [u8; 64], length: &mut u32) {
+    let mut left: u32 = ctx.total[0] & 0x3F;
     let fill: u32 = 64 - left;
+    let i_ptr = input.as_ptr();
 
     ctx.total[0] += *length;
     ctx.total[0] &= 0xFFFFFFFF;
@@ -174,22 +175,43 @@ pub(crate) fn update(ctx: &mut SHA256Context, input: *mut [u8; 64], length: &mut
     if ctx.total[0] < *length { ctx.total[1] += 1 }
 
     if left != 0 && *length >= fill {
-        // memcpy( (void *) (ctx->buffer + left),
-        //         (void *) input, fill );
-        // sha256_process( ctx, ctx->buffer );
-        // length -= fill;
-        // input  += fill;
-        // left = 0;
+        unsafe { copy_nonoverlapping(i_ptr, ctx.buffer.as_ptr().add(left as usize) as *mut u8, fill as usize) };
+        process(ctx, ctx.buffer);
+        *length -= fill;
+        unsafe { i_ptr.add(fill as usize) };
+        left = 0;
     }
 
     while *length >= 64 {
-        process( ctx, unsafe { *input } );
+        let ipt: [u8; 64] = unsafe { *(i_ptr as *const [u8; 64]) };
+        process( ctx, ipt );
         *length -= 64;
-        unsafe { input.add(64) };
+        unsafe { i_ptr.add(64) };
     }
 
     if *length != 0 {
-        // memcpy( (void *) (ctx->buffer + left),
-        //         (void *) input, length );
+        unsafe { copy_nonoverlapping(i_ptr, ctx.buffer.as_ptr().add(left as usize) as *mut u8, *length as usize) };
     }
+}
+
+static SHA256_PADDING: [u32; 64] = [
+    0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+];
+
+pub(crate) fn finish(ctx: &mut SHA256Context, digest: &mut [u8; 32]) {
+    let last: u32;
+    let padn: u32;
+    let high: u32;
+    let low: u32;
+    let msglen: [u8; 8];
+
+    high = (ctx.total[0] >> 29)
+         | (ctx.total[1] <<  3);
+    low  =  ctx.total[0] <<  3;
+
+    // put_u32(high, msglen, 0);
+    // put_u32(low , msglen, 4);
 }

@@ -1,4 +1,4 @@
-#![allow(unused_imports, dead_code, unused_variables)]
+#![allow(unused_imports, dead_code, unused_variables, unused_assignments)]
 // ---------------------- Version 2 ------------------------
 //
 //   3 Octets - 'AES'
