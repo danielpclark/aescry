@@ -1,0 +1,23 @@
+cargo-features = ["edition"]
+
+[package]
+name = "aescry"
+version = "0.1.0"
+authors = ["Daniel P. Clark <6ftdan@gmail.com>"]
+edition = "2018"
+
+description = "Library for detecting AES encrypted files and for encryption/decryption."
+homepage = "https://github.com/danielpclark/aescry"
+repository = "https://github.com/danielpclark/aescry"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["aes","crypt","encryption"]
+categories = ["cryptography"]
+
+[badges]
+travis-ci = { repository = "danielpclark/aescry", branch = "master" }
+
+[dependencies]
+byteorder = "1"
+ring = "^0.12.1"
+nom = "~4.0"
