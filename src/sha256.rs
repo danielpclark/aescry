@@ -164,4 +164,32 @@ fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x
     *h = temp1 + temp2;
 }
 
+pub(crate) fn update(ctx: &mut SHA256Context, input: *const [u8; 64], length: &mut u32) {
+    let left: u32 = ctx.total[0] & 0x3F;
+    let fill: u32 = 64 - left;
 
+    ctx.total[0] += *length;
+    ctx.total[0] &= 0xFFFFFFFF;
+
+    if ctx.total[0] < *length { ctx.total[1] += 1 }
+
+    if left != 0 && *length >= fill {
+        // memcpy( (void *) (ctx->buffer + left),
+        //         (void *) input, fill );
+        // sha256_process( ctx, ctx->buffer );
+        // length -= fill;
+        // input  += fill;
+        // left = 0;
+    }
+
+    while *length >= 64 {
+        process( ctx, unsafe { *input } );
+        *length -= 64;
+        unsafe { input.add(64) };
+    }
+
+    if length != 0 {
+        // memcpy( (void *) (ctx->buffer + left),
+        //         (void *) input, length );
+    }
+}
