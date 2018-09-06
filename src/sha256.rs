@@ -1,30 +1,19 @@
+// FIPS 180-2 compliant
 use std::ptr::copy_nonoverlapping;
+use core::array::FixedSizeArray;
 
+pub mod algorithms;
+use self::algorithms::*;
+
+#[derive(Clone)]
 pub(crate) struct SHA256Context {
     pub(crate) total: [u32; 2],
     pub(crate) state: [u32; 8],
     pub(crate) buffer: [u8; 64],
 }
 
-#[inline]
-fn get_u32(data: &[u8], index: usize) -> u32 {
-    (data[index] as u32) << 24
-        | (data[index + 1] as u32) << 16
-        | (data[index + 2] as u32) << 8
-        | data[index + 3] as u32
-}
-
-#[inline]
-fn put_u32(state: u32, data: &mut [u8], index: usize) {
-    data[index] = (state >> 24) as u8;
-    data[index + 1] = (state >> 18) as u8;
-    data[index + 2] = (state >> 8) as u8;
-    data[index + 3] = state as u8;
-}
-
-pub(crate) fn starts(ctx: &mut SHA256Context) {
-    ctx.total = [0; 2];
-    ctx.state = [
+pub(crate) fn starts(context: Option<&mut SHA256Context>) -> SHA256Context {
+    let state = [
         0x6A09E667,
         0xBB67AE85,
         0x3C6EF372,
@@ -34,9 +23,14 @@ pub(crate) fn starts(ctx: &mut SHA256Context) {
         0x1F83D9AB,
         0x5BE0CD19,
     ];
+
+    match context {
+        Some(ctx) => { ctx.total = [0u32; 2]; ctx.state = state; ctx.clone() },
+        None => SHA256Context { total: [0u32; 2], state: state, buffer: [0u8; 64] },
+    }
 }
 
-pub(crate) fn process(ctx: &mut SHA256Context, data: [u8; 64]) {
+pub(crate) fn process(context: &mut SHA256Context, data: [u8; 64]) {
     let mut w: [u32; 64] = [0; 64];
 
     w[0] = get_u32(&data, 0);
@@ -56,14 +50,14 @@ pub(crate) fn process(ctx: &mut SHA256Context, data: [u8; 64]) {
     w[14] = get_u32(&data, 56);
     w[15] = get_u32(&data, 60);
 
-    let mut a = ctx.state[0];
-    let mut b = ctx.state[1];
-    let mut c = ctx.state[2];
-    let mut d = ctx.state[3];
-    let mut e = ctx.state[4];
-    let mut f = ctx.state[5];
-    let mut g = ctx.state[6];
-    let mut h = ctx.state[7];
+    let mut a = context.state[0];
+    let mut b = context.state[1];
+    let mut c = context.state[2];
+    let mut d = context.state[3];
+    let mut e = context.state[4];
+    let mut f = context.state[5];
+    let mut g = context.state[6];
+    let mut h = context.state[7];
 
     p( a, b, c, &mut d, e, f, g, &mut h, w[ 0], 0x428A2F98 );
     p( h, a, b, &mut c, d, e, f, &mut g, w[ 1], 0x71374491 );
@@ -130,53 +124,29 @@ pub(crate) fn process(ctx: &mut SHA256Context, data: [u8; 64]) {
     p( c, d, e, &mut f, g, h, a, &mut b, r(&mut w, 62), 0xBEF9A3F7 );
     p( b, c, d, &mut e, f, g, h, &mut a, r(&mut w, 63), 0xC67178F2 );
 
-    ctx.state[0] += a;
-    ctx.state[1] += b;
-    ctx.state[2] += c;
-    ctx.state[3] += d;
-    ctx.state[4] += e;
-    ctx.state[5] += f;
-    ctx.state[6] += g;
-    ctx.state[7] += h;
+    context.state[0] += a;
+    context.state[1] += b;
+    context.state[2] += c;
+    context.state[3] += d;
+    context.state[4] += e;
+    context.state[5] += f;
+    context.state[6] += g;
+    context.state[7] += h;
 }
 
-#[inline] fn shr(x: u32, n: u32)  -> u32 { (x & 0xFFFFFFFF) >> n         }
-#[inline] fn rotr(x: u32, n: u32) -> u32 { shr(x,n) | (x << (32 - n))    }
-
-#[inline] fn s0(x: u32) -> u32 { rotr(x, 7) ^ rotr(x,18) ^ shr(x,3)      }
-#[inline] fn s1(x: u32) -> u32 { rotr(x,17) ^ rotr(x,19) ^ shr(x,10)     }
-#[inline] fn s2(x: u32) -> u32 { rotr(x, 2) ^ rotr(x,13) ^ rotr(x,22)    }
-#[inline] fn s3(x: u32) -> u32 { rotr(x, 6) ^ rotr(x,11) ^ rotr(x,25)    }
-
-#[inline] fn f0(x: u32, y: u32, z: u32) -> u32 { (x & y) | (z & (x | y)) }
-#[inline] fn f1(x: u32, y: u32, z: u32) -> u32 { z ^ (x & (y ^ z))       }
-
-#[inline] fn r(w: &mut [u32; 64], t: usize) -> u32 {
-    w[t] = s1(w[t - 2]) + w[t - 7] + s0(w[t - 15]) + w[t - 16];
-    w[t]
-}
-
-#[inline]
-fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x: u32, k: u32) {
-    let temp1 = *h + s3(e) + f1(e,f,g) + k + x;
-    let temp2 = s2(a) + f0(a,b,c);
-    *d += temp1;
-    *h = temp1 + temp2;
-}
-
-pub(crate) fn update(ctx: &mut SHA256Context, input: [u8; 64], length: &mut u32) {
-    let mut left: u32 = ctx.total[0] & 0x3F;
+pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32) {
+    let mut left: u32 = context.total[0] & 0x3F;
     let fill: u32 = 64 - left;
     let i_ptr = input.as_ptr();
 
-    ctx.total[0] += *length;
-    ctx.total[0] &= 0xFFFFFFFF;
+    context.total[0] += *length;
+    context.total[0] &= 0xFFFFFFFF;
 
-    if ctx.total[0] < *length { ctx.total[1] += 1 }
+    if context.total[0] < *length { context.total[1] += 1 }
 
     if left != 0 && *length >= fill {
-        unsafe { copy_nonoverlapping(i_ptr, ctx.buffer.as_ptr().add(left as usize) as *mut u8, fill as usize) };
-        process(ctx, ctx.buffer);
+        unsafe { copy_nonoverlapping(i_ptr, context.buffer.as_ptr().add(left as usize) as *mut u8, fill as usize) };
+        process(context, context.buffer);
         *length -= fill;
         unsafe { i_ptr.add(fill as usize) };
         left = 0;
@@ -184,34 +154,36 @@ pub(crate) fn update(ctx: &mut SHA256Context, input: [u8; 64], length: &mut u32)
 
     while *length >= 64 {
         let ipt: [u8; 64] = unsafe { *(i_ptr as *const [u8; 64]) };
-        process( ctx, ipt );
+        process( context, ipt );
         *length -= 64;
         unsafe { i_ptr.add(64) };
     }
 
     if *length != 0 {
-        unsafe { copy_nonoverlapping(i_ptr, ctx.buffer.as_ptr().add(left as usize) as *mut u8, *length as usize) };
+        unsafe { copy_nonoverlapping(i_ptr, context.buffer.as_ptr().add(left as usize) as *mut u8, *length as usize) };
     }
 }
 
-static SHA256_PADDING: [u32; 64] = [
-    0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-];
+pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
+    let high: u32 = (context.total[0] >> 29) | (context.total[1] <<  3);
+    let low:  u32 =  context.total[0] <<  3;
+    let msglen: &mut [u8] = &mut [0u8; 8];
 
-pub(crate) fn finish(ctx: &mut SHA256Context, digest: &mut [u8; 32]) {
-    let last: u32;
-    let padn: u32;
-    let high: u32;
-    let low: u32;
-    let msglen: [u8; 8];
+    put_u32(high, msglen, 0);
+    put_u32(low , msglen, 4);
 
-    high = (ctx.total[0] >> 29)
-         | (ctx.total[1] <<  3);
-    low  =  ctx.total[0] <<  3;
+    let last: u32 = context.total[0] & 0x3F;
+    let mut padn: u32 = if last < 56 { 56 - last } else { 120 - last };
 
-    // put_u32(high, msglen, 0);
-    // put_u32(low , msglen, 4);
+    update(context, SHA256_PADDING.as_slice(), &mut padn);
+    update(context, msglen, &mut 8);
+
+    put_u32(context.state[0], digest,  0);
+    put_u32(context.state[1], digest,  4);
+    put_u32(context.state[2], digest,  8);
+    put_u32(context.state[3], digest, 12);
+    put_u32(context.state[4], digest, 16);
+    put_u32(context.state[5], digest, 20);
+    put_u32(context.state[6], digest, 24);
+    put_u32(context.state[7], digest, 28);
 }
