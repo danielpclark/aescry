@@ -1,5 +1,6 @@
-#![allow(unused_imports, dead_code, unused_variables, unused_assignments)]
+#![allow(unused_imports, dead_code, unused_variables, unused_assignments, unused_macros)]
 #![feature(fixed_size_array)]
+#![feature(min_const_fn)]
 // ---------------------- Version 2 ------------------------
 //
 //   3 Octets - 'AES'
@@ -96,6 +97,11 @@ use std::io::prelude::*;
 use std::fs::File;
 use std::str;
 
+#[macro_use]
+mod fixed_tables;
+
+mod algorithms;
+mod aes;
 mod sha256;
 use crate::sha256::*;
 

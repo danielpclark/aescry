@@ -2,8 +2,7 @@
 use std::ptr::copy_nonoverlapping;
 use core::array::FixedSizeArray;
 
-pub mod algorithms;
-use self::algorithms::*;
+use crate::algorithms::*;
 
 #[derive(Clone)]
 pub(crate) struct SHA256Context {

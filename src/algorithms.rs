@@ -16,10 +16,22 @@ pub(crate) fn get_u32(data: &[u8], index: usize) -> u32 {
 #[inline]
 pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
     data[index] = (state >> 24) as u8;
-    data[index + 1] = (state >> 18) as u8;
+    data[index + 1] = (state >> 16) as u8;
     data[index + 2] = (state >> 8) as u8;
     data[index + 3] = state as u8;
 }
+
+#[inline] pub(crate) fn xtime(x: u8) -> u8 {
+    ( x << 1 ) ^ (
+        if ( x & 0x80 ) != 0 {
+            0x1B
+        } else {
+            0x00
+        } 
+    )
+}
+#[inline] pub(crate) fn rotr8(x: u32) -> u32 {  ( ( x << 24 ) & 0xFFFFFFFF )
+                                              | ( ( x & 0xFFFFFFFF ) >>  8 ) }
 
 #[inline] fn shr(x: u32, n: u32)  -> u32 { (x & 0xFFFFFFFF) >> n         }
 #[inline] fn rotr(x: u32, n: u32) -> u32 { shr(x,n) | (x << (32 - n))    }
@@ -44,3 +56,4 @@ pub(crate) fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: 
     *d += temp1;
     *h = temp1 + temp2;
 }
+
