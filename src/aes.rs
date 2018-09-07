@@ -63,13 +63,21 @@ impl ReverseTables {
 
 // round constants
 
-static RCON: [u32; 10] = [
+type Rcon = [u32; 10];
+
+const RCON: Rcon = [
     0x01000000, 0x02000000, 0x04000000, 0x08000000,
     0x10000000, 0x20000000, 0x40000000, 0x80000000,
     0x1B000000, 0x36000000
 ];
 
-pub fn gen_tables() -> (ForwardTables, ReverseTables) {
+pub struct ContextTables {
+    ft: ForwardTables,
+    rt: ReverseTables,
+    rc: Rcon,
+}
+
+pub fn gen_tables() -> ContextTables {
     let mut pow: [u8; 256] = [0u8; 256];
     let mut log: [u8; 256] = [0u8; 256];
 
@@ -84,10 +92,12 @@ pub fn gen_tables() -> (ForwardTables, ReverseTables) {
     }
 
     // calculate the round constants
+    
+    let mut rcon: Rcon = RCON;
 
     let mut x: u8 = 1;
     for i in 0..10 {
-        RCON[i] = (x as u32) << 24;
+        rcon[i] = (x as u32) << 24;
 
         x = xtime(x)
     }
@@ -186,10 +196,14 @@ pub fn gen_tables() -> (ForwardTables, ReverseTables) {
         rt3: rt3,
     };
 
-    (ft, rt)
+    ContextTables {
+        ft: ft,
+        rt: rt,
+        rc: rcon,
+    }
 }
 
 // AES key scheduling routine
 
-pub fn set_key(context: AesContext, key: &u8, nbits: isize) {
+pub fn set_key(context: AesContext, tables: ContextTables, key: &u8, nbits: isize) {
 }
