@@ -70,25 +70,25 @@ pub const REVERSE_SBOX: [u8; 256] = [
 
 macro_rules! v_abcd {
     ($a:expr, $b:expr, $c:expr, $d:expr) => {
-        0x00000000_u32 | ($a << 24) | ($b << 16) | ($c << 8) | $d
+        ($a << 24) | ($b << 16) | ($c << 8) | $d
     }
 }
 
 macro_rules! v_dabc {
     ($a:expr, $b:expr, $c:expr, $d:expr) => {
-        0x00000000_u32 | ($d << 24) | ($a << 16) | ($b << 8) | $c
+        ($d << 24) | ($a << 16) | ($b << 8) | $c
     }
 }
 
 macro_rules! v_cdab {
     ($a:expr, $b:expr, $c:expr, $d:expr) => {
-        0x00000000_u32 | ($c << 24) | ($d << 16) | ($a << 8) | $b
+        ($c << 24) | ($d << 16) | ($a << 8) | $b
     }
 }
 
 macro_rules! v_bcda {
     ($a:expr, $b:expr, $c:expr, $d:expr) => {
-        0x00000000_u32 | ($b << 24) | ($c << 16) | ($d << 8) | $a
+        ($b << 24) | ($c << 16) | ($d << 8) | $a
     }
 }
 

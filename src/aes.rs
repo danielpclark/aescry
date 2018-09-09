@@ -205,5 +205,17 @@ pub fn gen_tables() -> ContextTables {
 
 // AES key scheduling routine
 
-pub fn set_key(context: AesContext, tables: ContextTables, key: &u8, nbits: isize) {
+pub fn set_key(context: &mut AesContext, tables: ContextTables, key: &[u8], nbits: isize) {
+    match nbits {
+        128 => { context.nr = 10; },
+        192 => { context.nr = 12; },
+        256 => { context.nr = 14; },
+        _ => (),
+    }
+
+    let mut rk = context.erk;
+    
+    for i in 0..(nbits as usize >> 5) {
+        rk[i] = get_u32( key, i * 4 )
+    }
 }
