@@ -1,4 +1,5 @@
 use crate::fixed_tables::{FORWARD_SBOX, REVERSE_SBOX};
+use std::slice;
 
 use crate::algorithms::{
     get_u32,
@@ -218,4 +219,79 @@ pub fn set_key(context: &mut AesContext, tables: ContextTables, key: &[u8], nbit
     for i in 0..(nbits as usize >> 5) {
         rk[i] = get_u32( key, i * 4 )
     }
+
+    // setup encryption round keys
+    
+    let rk_ptr = rk.as_ptr() as *mut u32;
+    
+    match nbits {
+        128 => {
+            let shifting = 4;
+            for i in 0..10 {
+                let temp_rk: &mut [u32] = unsafe { slice::from_raw_parts_mut(rk_ptr, 64 - (i * shifting)) };
+
+                temp_rk[4] = temp_rk[0] ^ tables.rc[i] ^
+                    ((tables.ft.fsb[(temp_rk[3] >> 16) as u8 as usize] as u32) << 24) ^
+                    ((tables.ft.fsb[(temp_rk[3] >>  8) as u8 as usize] as u32) << 16) ^
+                    ((tables.ft.fsb[(temp_rk[3]      ) as u8 as usize] as u32) <<  8) ^
+                    ((tables.ft.fsb[(temp_rk[3] >> 24) as u8 as usize] as u32)      );
+
+                temp_rk[5]  = temp_rk[1] ^ temp_rk[4];
+                temp_rk[6]  = temp_rk[2] ^ temp_rk[5];
+                temp_rk[7]  = temp_rk[3] ^ temp_rk[6];
+
+                unsafe { rk_ptr.add(shifting); }
+            }
+        },
+        192 => {
+            let shifting = 6;
+            for i in 0..8 {
+                let temp_rk: &mut [u32] = unsafe { slice::from_raw_parts_mut(rk_ptr, 64 - (i * shifting)) };
+
+                temp_rk[6] = temp_rk[0] ^ tables.rc[i] ^
+                    ((tables.ft.fsb[(temp_rk[5] >> 16) as u8 as usize] as u32) << 24) ^
+                    ((tables.ft.fsb[(temp_rk[5] >>  8) as u8 as usize] as u32) << 16) ^
+                    ((tables.ft.fsb[(temp_rk[5]      ) as u8 as usize] as u32) <<  8) ^
+                    ((tables.ft.fsb[(temp_rk[5] >> 24) as u8 as usize] as u32)      );
+
+                temp_rk[7]   = temp_rk[1] ^ temp_rk[6];
+                temp_rk[8]   = temp_rk[2] ^ temp_rk[7];
+                temp_rk[9]   = temp_rk[3] ^ temp_rk[8];
+                temp_rk[10]  = temp_rk[4] ^ temp_rk[9];
+                temp_rk[11]  = temp_rk[5] ^ temp_rk[10];
+
+                unsafe { rk_ptr.add(shifting); }
+            }
+        },
+        256 => {
+            let shifting = 8;
+            for i in 0..7 {
+                let temp_rk: &mut [u32] = unsafe { slice::from_raw_parts_mut(rk_ptr, 64 - (i * shifting)) };
+
+                temp_rk[8] = temp_rk[0] ^ tables.rc[i] ^
+                    ((tables.ft.fsb[(temp_rk[7] >> 16) as u8 as usize] as u32) << 24) ^
+                    ((tables.ft.fsb[(temp_rk[7] >>  8) as u8 as usize] as u32) << 16) ^
+                    ((tables.ft.fsb[(temp_rk[7]      ) as u8 as usize] as u32) <<  8) ^
+                    ((tables.ft.fsb[(temp_rk[7] >> 24) as u8 as usize] as u32)      );
+
+                temp_rk[9]   = temp_rk[1] ^ temp_rk[8];
+                temp_rk[10]  = temp_rk[2] ^ temp_rk[9];
+                temp_rk[11]  = temp_rk[3] ^ temp_rk[10];
+
+                temp_rk[12] = temp_rk[4] ^ tables.rc[i] ^
+                    ((tables.ft.fsb[(temp_rk[11] >> 16) as u8 as usize] as u32) << 24) ^
+                    ((tables.ft.fsb[(temp_rk[11] >>  8) as u8 as usize] as u32) << 16) ^
+                    ((tables.ft.fsb[(temp_rk[11]      ) as u8 as usize] as u32) <<  8) ^
+                    ((tables.ft.fsb[(temp_rk[11] >> 24) as u8 as usize] as u32)      );
+
+                temp_rk[13]  = temp_rk[5] ^ temp_rk[12];
+                temp_rk[14]  = temp_rk[6] ^ temp_rk[13];
+                temp_rk[15]  = temp_rk[7] ^ temp_rk[14];
+
+                unsafe { rk_ptr.add(shifting); }
+            }
+        },
+        _ => ()
+    }
+
 }
