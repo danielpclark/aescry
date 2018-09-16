@@ -72,10 +72,33 @@ const RCON: Rcon = [
     0x1B000000, 0x36000000
 ];
 
+// decryption key schedule tables
+
+pub struct KeyTables {
+    pub init: bool,
+    pub kt0: [u32; 256],
+    pub kt1: [u32; 256],
+    pub kt2: [u32; 256],
+    pub kt3: [u32; 256],
+}
+
+impl KeyTables {
+    const fn new() -> KeyTables {
+        KeyTables {
+            init: false,
+            kt0: [0u32; 256], 
+            kt1: [0u32; 256], 
+            kt2: [0u32; 256], 
+            kt3: [0u32; 256], 
+        }
+    }
+}
+
 pub struct ContextTables {
     ft: ForwardTables,
     rt: ReverseTables,
     rc: Rcon,
+    kt: KeyTables,
 }
 
 pub fn gen_tables() -> ContextTables {
@@ -201,12 +224,13 @@ pub fn gen_tables() -> ContextTables {
         ft: ft,
         rt: rt,
         rc: rcon,
+        kt: KeyTables::new(),
     }
 }
 
 // AES key scheduling routine
 
-pub fn set_key(context: &mut AesContext, tables: ContextTables, key: &[u8], nbits: isize) {
+pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8], nbits: isize) {
     match nbits {
         128 => { context.nr = 10; },
         192 => { context.nr = 12; },
@@ -294,4 +318,55 @@ pub fn set_key(context: &mut AesContext, tables: ContextTables, key: &[u8], nbit
         _ => ()
     }
 
+    // setup decryption round keys
+    
+    if tables.kt.init {
+        for i in 0..256 {
+            tables.kt.kt0[i] = tables.rt.rt0[ tables.ft.fsb[i] as usize ];
+            tables.kt.kt1[i] = tables.rt.rt1[ tables.ft.fsb[i] as usize ];
+            tables.kt.kt2[i] = tables.rt.rt2[ tables.ft.fsb[i] as usize ];
+            tables.kt.kt3[i] = tables.rt.rt3[ tables.ft.fsb[i] as usize ];
+        }
+
+        tables.kt.init = false
+    }
+
+    let sk = context.drk;
+
+    let sk_ptr = sk.as_ptr() as *mut u32;
+
+    // equivelant to C's
+    //     *A++ == *B++
+    let ptr_cp_incr = |a: *mut u32, b: *mut u32| {
+        let mut ref_a: &mut u32 = unsafe { &mut *a };
+        let ref_b: &mut u32 = unsafe { &mut *b };
+
+        ref_a = ref_b;
+
+        unsafe { a.add(1); b.add(1); }
+    };
+
+    for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
+
+    let sk_from_key_table_flip = || {
+        let mut ref_sk: &mut u32 = unsafe { &mut *sk_ptr };
+        let ref_rk: &u32 = unsafe { &*rk_ptr };
+
+        ref_sk = &mut (tables.kt.kt0[ (*(ref_rk) >> 24) as u8 as usize ] ^
+                       tables.kt.kt1[ (*(ref_rk) >> 16) as u8 as usize ] ^
+                       tables.kt.kt2[ (*(ref_rk) >>  8) as u8 as usize ] ^
+                       tables.kt.kt3[ (*(ref_rk)      ) as u8 as usize ]);
+
+        unsafe { sk_ptr.add(1); rk_ptr.add(1); }
+    };
+
+    for i in 1..context.nr {
+        unsafe { rk_ptr.sub(8); }
+
+        for _ in 0..4 { sk_from_key_table_flip(); }
+    }
+
+    unsafe { rk_ptr.sub(8); }
+
+    for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
 }
