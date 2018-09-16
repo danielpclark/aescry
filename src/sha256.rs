@@ -133,6 +133,7 @@ pub(crate) fn process(context: &mut SHA256Context, data: [u8; 64]) {
     context.state[7] += h;
 }
 
+// TODO: Incorrect/rewrite
 pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32) {
     let mut left: u32 = context.total[0] & 0x3F;
     let fill: u32 = 64 - left;
