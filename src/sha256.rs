@@ -162,7 +162,7 @@ pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32
     }
 
     while *length >= 64 {
-        let temp_input: &mut [u8] = unsafe { slice::from_raw_parts_mut(ipt_ptr, 64) };
+        let temp_input: &[u8] = unsafe { slice::from_raw_parts(ipt_ptr, 64) };
         process(&mut context.state, temp_input);
         *length -= 64;
         unsafe { ipt_ptr = ipt_ptr.add(64); }
@@ -171,7 +171,7 @@ pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32
     if *length != 0 {
         // memcpy( (void *) (ctx->buffer + left),
         //         (void *) input, length );
-        let temp_input: &mut [u8] = unsafe { slice::from_raw_parts_mut(ipt_ptr, 64) };
+        let temp_input: &[u8] = unsafe { slice::from_raw_parts(ipt_ptr, 64) };
         unsafe { ptr::copy_nonoverlapping(ipt_ptr, bfr_ptr.add(left as usize), fill as usize); }
     }
 }
