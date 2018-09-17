@@ -371,7 +371,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
     for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
 }
 
-pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], output: [u8; 16]) {
+pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], mut output: [u8; 16]) {
     let rk = context.erk;
 
     let mut x0 = get_u32(&input,  0); x0 ^= rk[0];
@@ -440,4 +440,35 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
         aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   /* round 12 */
         aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   /* round 13 */
     }
+
+
+    /* last round */
+
+    unsafe { rk_ptr.add(4); } remaining += 4;
+    let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+
+    x0 = temp_rk[0] ^ ((tables.ft.fsb[ (y0 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.ft.fsb[ (y1 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.ft.fsb[ (y2 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.ft.fsb[  y3        as u8 as usize ] as u32       );
+ 
+    x1 = temp_rk[1] ^ ((tables.ft.fsb[ (y1 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.ft.fsb[ (y2 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.ft.fsb[ (y3 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.ft.fsb[  y0        as u8 as usize ] as u32       );
+
+    x2 = temp_rk[2] ^ ((tables.ft.fsb[ (y2 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.ft.fsb[ (y3 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.ft.fsb[ (y0 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.ft.fsb[  y1        as u8 as usize ] as u32       );
+
+    x3 = temp_rk[3] ^ ((tables.ft.fsb[ (y3 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.ft.fsb[ (y0 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.ft.fsb[ (y1 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.ft.fsb[  y2        as u8 as usize ] as u32       );
+
+    put_u32( x0, &mut output,  0 );
+    put_u32( x1, &mut output,  4 );
+    put_u32( x2, &mut output,  8 );
+    put_u32( x3, &mut output, 12 );
 }
