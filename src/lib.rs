@@ -56,7 +56,7 @@
 //  nn Octets - Encrypted message (2^64 octets max)
 //   1 Octet  - File size modulo 16 in least significant bit positions
 //  32 Octets - HMAC
-//  
+//
 //  Thus, the footprint of the file is at least 134 octets.
 //
 // ---------------------- Version 1 ------------------------
@@ -75,7 +75,7 @@
 //  nn Octets - Encrypted message (2^64 octets max)
 //   1 Octet  - File size modulo 16 in least significant bit positions
 //  32 Octets - HMAC
-//  
+//
 //  Thus, the footprint of the file is at least 134 octets.
 //
 // ---------------------- Version 0 ------------------------
@@ -86,7 +86,7 @@
 //  16 Octets - Initialization Vector (IV)
 //  nn Octets - Encrypted message (2^64 octets max)
 //  32 Octets - HMAC
-//  
+//
 //  Thus, the footprint of the file is at least 53 octets.
 
 type BytesProcessed = usize;
@@ -192,6 +192,6 @@ pub mod detect {
     fn hmac_sha256(file: &mut File) -> [u8; 32] {
       let mut hmac = [0; 32];
       file.read_exact(&mut hmac).unwrap();
-      hmac 
+      hmac
     }
 }

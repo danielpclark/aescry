@@ -27,7 +27,7 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
             0x1B
         } else {
             0x00
-        } 
+        }
     )
 }
 #[inline(always)] pub(crate) fn rotr8(x: u32) -> u32 {  ( ( x << 24 ) & 0xFFFFFFFF )

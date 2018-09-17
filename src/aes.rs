@@ -86,10 +86,10 @@ impl KeyTables {
     const fn new() -> KeyTables {
         KeyTables {
             init: false,
-            kt0: [0u32; 256], 
-            kt1: [0u32; 256], 
-            kt2: [0u32; 256], 
-            kt3: [0u32; 256], 
+            kt0: [0u32; 256],
+            kt1: [0u32; 256],
+            kt2: [0u32; 256],
+            kt3: [0u32; 256],
         }
     }
 }
@@ -116,7 +116,7 @@ pub fn gen_tables() -> ContextTables {
     }
 
     // calculate the round constants
-    
+
     let mut rcon: Rcon = RCON;
 
     let mut x: u8 = 1;
@@ -239,15 +239,15 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
     }
 
     let mut rk = context.erk;
-    
+
     for i in 0..(nbits as usize >> 5) {
         rk[i] = get_u32( key, i * 4 )
     }
 
     // setup encryption round keys
-    
+
     let rk_ptr = rk.as_ptr() as *mut u32;
-    
+
     match nbits {
         128 => {
             let shifting = 4;
@@ -319,7 +319,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
     }
 
     // setup decryption round keys
-    
+
     if tables.kt.init {
         for i in 0..256 {
             tables.kt.kt0[i] = tables.rt.rt0[ tables.ft.fsb[i] as usize ];
@@ -380,7 +380,7 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
     let mut x1 = get_u32(&input,  4); x1 ^= rk[1];
     let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
     let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
-    
+
     let rk_ptr = rk.as_ptr() as *const u32;
 
     let mut remaining = 0;
@@ -453,7 +453,7 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                       ((tables.ft.fsb[ (y1 >> 16) as u8 as usize ] as u32) << 16) ^
                       ((tables.ft.fsb[ (y2 >>  8) as u8 as usize ] as u32) <<  8) ^
                       ( tables.ft.fsb[  y3        as u8 as usize ] as u32       );
- 
+
     x1 = temp_rk[1] ^ ((tables.ft.fsb[ (y1 >> 24) as u8 as usize ] as u32) << 24) ^
                       ((tables.ft.fsb[ (y2 >> 16) as u8 as usize ] as u32) << 16) ^
                       ((tables.ft.fsb[ (y3 >>  8) as u8 as usize ] as u32) <<  8) ^
@@ -484,7 +484,7 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
     let mut x1 = get_u32(&input,  4); x1 ^= rk[1];
     let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
     let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
-    
+
     let rk_ptr = rk.as_ptr() as *const u32;
 
     let mut remaining = 0;
@@ -557,7 +557,7 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                       ((tables.rt.rsb[ (y3 >> 16) as u8 as usize ] as u32) << 16) ^
                       ((tables.rt.rsb[ (y2 >>  8) as u8 as usize ] as u32) <<  8) ^
                       ( tables.rt.rsb[  y1        as u8 as usize ] as u32       );
- 
+
     x1 = temp_rk[1] ^ ((tables.rt.rsb[ (y1 >> 24) as u8 as usize ] as u32) << 24) ^
                       ((tables.rt.rsb[ (y0 >> 16) as u8 as usize ] as u32) << 16) ^
                       ((tables.rt.rsb[ (y3 >>  8) as u8 as usize ] as u32) <<  8) ^

@@ -1,6 +1,6 @@
 // FIPS 180-2 compliant
-use std::ptr::copy_nonoverlapping;
-use core::array::FixedSizeArray;
+use core::array::FixedSizeArray; // for `as_slice`
+use std::{slice, ptr};
 
 use crate::algorithms::*;
 
@@ -29,34 +29,36 @@ pub(crate) fn starts(context: Option<&mut SHA256Context>) -> SHA256Context {
     }
 }
 
-pub(crate) fn process(context: &mut SHA256Context, data: [u8; 64]) {
+pub(crate) fn process(state: &mut [u32], data: &[u8]) {
+    assert!(data.len() == 64, "invalid data length");
+    assert!(state.len() == 8, "invalid state length");
     let mut w: [u32; 64] = [0; 64];
 
-    w[0] = get_u32(&data, 0);
-    w[1] = get_u32(&data, 4);
-    w[2] = get_u32(&data, 8);
-    w[3] = get_u32(&data, 12);
-    w[4] = get_u32(&data, 16);
-    w[5] = get_u32(&data, 20);
-    w[6] = get_u32(&data, 24);
-    w[7] = get_u32(&data, 28);
-    w[8] = get_u32(&data, 32);
-    w[9] = get_u32(&data, 36);
-    w[10] = get_u32(&data, 40);
-    w[11] = get_u32(&data, 44);
-    w[12] = get_u32(&data, 48);
-    w[13] = get_u32(&data, 52);
-    w[14] = get_u32(&data, 56);
-    w[15] = get_u32(&data, 60);
+    w[0]  = get_u32(data, 0);
+    w[1]  = get_u32(data, 4);
+    w[2]  = get_u32(data, 8);
+    w[3]  = get_u32(data, 12);
+    w[4]  = get_u32(data, 16);
+    w[5]  = get_u32(data, 20);
+    w[6]  = get_u32(data, 24);
+    w[7]  = get_u32(data, 28);
+    w[8]  = get_u32(data, 32);
+    w[9]  = get_u32(data, 36);
+    w[10] = get_u32(data, 40);
+    w[11] = get_u32(data, 44);
+    w[12] = get_u32(data, 48);
+    w[13] = get_u32(data, 52);
+    w[14] = get_u32(data, 56);
+    w[15] = get_u32(data, 60);
 
-    let mut a = context.state[0];
-    let mut b = context.state[1];
-    let mut c = context.state[2];
-    let mut d = context.state[3];
-    let mut e = context.state[4];
-    let mut f = context.state[5];
-    let mut g = context.state[6];
-    let mut h = context.state[7];
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+    let mut e = state[4];
+    let mut f = state[5];
+    let mut g = state[6];
+    let mut h = state[7];
 
     p( a, b, c, &mut d, e, f, g, &mut h, w[ 0], 0x428A2F98 );
     p( h, a, b, &mut c, d, e, f, &mut g, w[ 1], 0x71374491 );
@@ -123,44 +125,54 @@ pub(crate) fn process(context: &mut SHA256Context, data: [u8; 64]) {
     p( c, d, e, &mut f, g, h, a, &mut b, r(&mut w, 62), 0xBEF9A3F7 );
     p( b, c, d, &mut e, f, g, h, &mut a, r(&mut w, 63), 0xC67178F2 );
 
-    context.state[0] += a;
-    context.state[1] += b;
-    context.state[2] += c;
-    context.state[3] += d;
-    context.state[4] += e;
-    context.state[5] += f;
-    context.state[6] += g;
-    context.state[7] += h;
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+    state[5] += f;
+    state[6] += g;
+    state[7] += h;
 }
 
-// TODO: Incorrect/rewrite
 pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32) {
-    let mut left: u32 = context.total[0] & 0x3F;
-    let fill: u32 = 64 - left;
-    let i_ptr = input.as_ptr();
+    let mut left = context.total[0] & 0x3F;
+    let fill = 64 - left;
 
     context.total[0] += *length;
     context.total[0] &= 0xFFFFFFFF;
 
-    if context.total[0] < *length { context.total[1] += 1 }
+    if context.total[0] < *length {
+        context.total[1] += 1;
+    }
+
+    let bfr_ptr = context.buffer.as_ptr() as *mut u8;
+    let mut ipt_ptr = input.as_ptr() as *mut u8;
 
     if left != 0 && *length >= fill {
-        unsafe { copy_nonoverlapping(i_ptr, context.buffer.as_ptr().add(left as usize) as *mut u8, fill as usize) };
-        process(context, context.buffer);
+        // memcpy( (void *) (ctx->buffer + left),
+        //         (void *) input, fill );
+        unsafe { ptr::copy_nonoverlapping(ipt_ptr, bfr_ptr.add(left as usize), fill as usize); }
+
+        process(&mut context.state, &context.buffer);
+
         *length -= fill;
-        unsafe { i_ptr.add(fill as usize) };
+        unsafe { ipt_ptr = ipt_ptr.add(fill as usize); }
         left = 0;
     }
 
     while *length >= 64 {
-        let ipt: [u8; 64] = unsafe { *(i_ptr as *const [u8; 64]) };
-        process( context, ipt );
+        let temp_input: &mut [u8] = unsafe { slice::from_raw_parts_mut(ipt_ptr, 64) };
+        process(&mut context.state, temp_input);
         *length -= 64;
-        unsafe { i_ptr.add(64) };
+        unsafe { ipt_ptr = ipt_ptr.add(64); }
     }
 
     if *length != 0 {
-        unsafe { copy_nonoverlapping(i_ptr, context.buffer.as_ptr().add(left as usize) as *mut u8, *length as usize) };
+        // memcpy( (void *) (ctx->buffer + left),
+        //         (void *) input, length );
+        let temp_input: &mut [u8] = unsafe { slice::from_raw_parts_mut(ipt_ptr, 64) };
+        unsafe { ptr::copy_nonoverlapping(ipt_ptr, bfr_ptr.add(left as usize), fill as usize); }
     }
 }
 
