@@ -371,6 +371,8 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
     for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
 }
 
+// AES 128-bit block encryption routine
+
 pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], mut output: [u8; 16]) {
     let rk = context.erk;
 
@@ -421,28 +423,28 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
     let mut y2: u32 = 0;
     let mut y3: u32 = 0;
 
-    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       /* round 1 */
-    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       /* round 2 */
-    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       /* round 3 */
-    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       /* round 4 */
-    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       /* round 5 */
-    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       /* round 6 */
-    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       /* round 7 */
-    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       /* round 8 */
-    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       /* round 9 */
+    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 1
+    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 2
+    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 3
+    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 4
+    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 5
+    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 6
+    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 7
+    aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 8
+    aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 9
 
     if context.nr > 10 {
-        aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   /* round 10 */
-        aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   /* round 11 */
+        aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   // round 10
+        aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   // round 11
     }
 
     if context.nr > 12 {
-        aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   /* round 12 */
-        aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   /* round 13 */
+        aes_fround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   // round 12
+        aes_fround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   // round 13
     }
 
 
-    /* last round */
+    // last round
 
     unsafe { rk_ptr.add(4); } remaining += 4;
     let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
@@ -466,6 +468,110 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                       ((tables.ft.fsb[ (y0 >> 16) as u8 as usize ] as u32) << 16) ^
                       ((tables.ft.fsb[ (y1 >>  8) as u8 as usize ] as u32) <<  8) ^
                       ( tables.ft.fsb[  y2        as u8 as usize ] as u32       );
+
+    put_u32( x0, &mut output,  0 );
+    put_u32( x1, &mut output,  4 );
+    put_u32( x2, &mut output,  8 );
+    put_u32( x3, &mut output, 12 );
+}
+
+// AES 128-bit block decryption routine
+
+pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], mut output: [u8; 16]) {
+    let rk = context.drk;
+
+    let mut x0 = get_u32(&input,  0); x0 ^= rk[0];
+    let mut x1 = get_u32(&input,  4); x1 ^= rk[1];
+    let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
+    let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
+    
+    let rk_ptr = rk.as_ptr() as *const u32;
+
+    let mut remaining = 0;
+
+    let mut aes_rround = |x0: &mut u32,
+                          x1: &mut u32,
+                          x2: &mut u32,
+                          x3: &mut u32,
+                          y0: &u32,
+                          y1: &u32,
+                          y2: &u32,
+                          y3: &u32| {
+        unsafe { rk_ptr.add(4); } remaining += 4;
+
+        let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+
+        *x0 = temp_rk[0] ^ tables.rt.rt0[ (*(y0) >> 24) as u8 as usize ] ^
+                           tables.rt.rt1[ (*(y3) >> 16) as u8 as usize ] ^
+                           tables.rt.rt2[ (*(y2) >>  8) as u8 as usize ] ^
+                           tables.rt.rt3[  *(y1)        as u8 as usize ];
+
+        *x1 = temp_rk[1] ^ tables.rt.rt0[ (*(y1) >> 24) as u8 as usize ] ^
+                           tables.rt.rt1[ (*(y0) >> 16) as u8 as usize ] ^
+                           tables.rt.rt2[ (*(y3) >>  8) as u8 as usize ] ^
+                           tables.rt.rt3[  *(y2)        as u8 as usize ];
+
+        *x2 = temp_rk[2] ^ tables.rt.rt0[ (*(y2) >> 24) as u8 as usize ] ^
+                           tables.rt.rt1[ (*(y1) >> 16) as u8 as usize ] ^
+                           tables.rt.rt2[ (*(y0) >>  8) as u8 as usize ] ^
+                           tables.rt.rt3[  *(y3)        as u8 as usize ];
+
+        *x3 = temp_rk[3] ^ tables.rt.rt0[ (*(y3) >> 24) as u8 as usize ] ^
+                           tables.rt.rt1[ (*(y2) >> 16) as u8 as usize ] ^
+                           tables.rt.rt2[ (*(y1) >>  8) as u8 as usize ] ^
+                           tables.rt.rt3[  *(y0)        as u8 as usize ];
+    };
+
+    let mut y0: u32 = 0;
+    let mut y1: u32 = 0;
+    let mut y2: u32 = 0;
+    let mut y3: u32 = 0;
+
+    aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 1
+    aes_rround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 2
+    aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 3
+    aes_rround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 4
+    aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 5
+    aes_rround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 6
+    aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 7
+    aes_rround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );       // round 8
+    aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );       // round 9
+
+    if context.nr > 10 {
+        aes_rround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   // round 10
+        aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   // round 11
+    }
+
+    if context.nr > 12 {
+        aes_rround( &mut x0, &mut x1, &mut x2, &mut x3, &y0, &y1, &y2, &y3 );   // round 12
+        aes_rround( &mut y0, &mut y1, &mut y2, &mut y3, &x0, &x1, &x2, &x3 );   // round 13
+    }
+
+
+    // last round
+
+    unsafe { rk_ptr.add(4); } remaining += 4;
+    let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+
+    x0 = temp_rk[0] ^ ((tables.rt.rsb[ (y0 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.rt.rsb[ (y3 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.rt.rsb[ (y2 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.rt.rsb[  y1        as u8 as usize ] as u32       );
+ 
+    x1 = temp_rk[1] ^ ((tables.rt.rsb[ (y1 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.rt.rsb[ (y0 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.rt.rsb[ (y3 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.rt.rsb[  y2        as u8 as usize ] as u32       );
+
+    x2 = temp_rk[2] ^ ((tables.rt.rsb[ (y2 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.rt.rsb[ (y1 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.rt.rsb[ (y0 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.rt.rsb[  y3        as u8 as usize ] as u32       );
+
+    x3 = temp_rk[3] ^ ((tables.rt.rsb[ (y3 >> 24) as u8 as usize ] as u32) << 24) ^
+                      ((tables.rt.rsb[ (y2 >> 16) as u8 as usize ] as u32) << 16) ^
+                      ((tables.rt.rsb[ (y1 >>  8) as u8 as usize ] as u32) <<  8) ^
+                      ( tables.rt.rsb[  y0        as u8 as usize ] as u32       );
 
     put_u32( x0, &mut output,  0 );
     put_u32( x1, &mut output,  4 );
