@@ -17,5 +17,3 @@ travis-ci = { repository = "danielpclark/aescry", branch = "master" }
 
 [dependencies]
 byteorder = "1"
-ring = "^0.12.1"
-nom = "~4.0"

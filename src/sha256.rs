@@ -165,7 +165,7 @@ pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32
         let temp_input: &[u8] = unsafe { slice::from_raw_parts(ipt_ptr, 64) };
         process(&mut context.state, temp_input);
         *length -= 64;
-        ipt_ptr = unsafe { ipt_ptr.add(64); }
+        ipt_ptr = unsafe { ipt_ptr.add(64) };
     }
 
     if *length != 0 {
@@ -188,7 +188,7 @@ pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
     let mut padn: u32 = if last < 56 { 56 - last } else { 120 - last };
 
     update(context, SHA256_PADDING.as_slice(), &mut padn);
-    update(context, msglen, &mut 8);
+    update(context, msglen, &mut 8); // TODO: panic! attempt to add with overflow
 
     put_u32(context.state[0], digest,  0);
     put_u32(context.state[1], digest,  4);
@@ -198,4 +198,41 @@ pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
     put_u32(context.state[5], digest, 20);
     put_u32(context.state[6], digest, 24);
     put_u32(context.state[7], digest, 28);
+}
+
+
+#[test]
+fn it_works() {
+    let msg: [&'static str; 2] = ["abc", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"];
+    let val: [&'static str; 3] = [
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+    ];
+
+    let mut buf: [u8; 1000] = [0u8; 1000];
+    let mut sha256sum: [u8; 32] = [0u8; 32];
+
+    let mut ctx = starts(None);
+
+    for i in 0..3 {
+        starts(Some(&mut ctx));
+
+        if i < 2 {
+            update(&mut ctx, msg[i].as_bytes(), &mut (msg[i].len() as u32));
+        } else {
+            buf = [b'a'; 1000];
+
+            for j in 0..1000 {
+                update(&mut ctx, &buf, &mut 1000);
+            }
+        }
+
+        finish(&mut ctx, &mut sha256sum);
+
+        for j in 0..32 {
+            // TODO: More sensible testing
+            assert!(sha256sum[j] != 0x00, "{}", sha256sum[j]);
+        }
+    }
 }

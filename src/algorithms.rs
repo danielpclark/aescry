@@ -49,11 +49,25 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
     w[t]
 }
 
+// #[inline(always)]
+// pub(crate) fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x: u32, k: u32) {
+//     let temp1 = *h + s3(e) + f1(e,f,g) + k + x;
+//     let temp2 = s2(a) + f0(a,b,c);
+//     *d += temp1;
+//     *h = temp1 + temp2;
+// }
+
 #[inline(always)]
 pub(crate) fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x: u32, k: u32) {
-    let temp1 = *h + s3(e) + f1(e,f,g) + k + x;
-    let temp2 = s2(a) + f0(a,b,c);
-    *d += temp1;
-    *h = temp1 + temp2;
-}
+    let temp1 = (*h as u64) + s3(e) as u64 + f1(e,f,g) as u64 + k as u64 + x as u64;
+    let temp2 = s2(a) as u64 + f0(a,b,c) as u64;
 
+    if temp1 > u32::max_value() as u64 { panic!("u32 exceeded! algorithms::p variable temp1 {} > {}", temp1, u32::max_value()); }
+    if temp2 > u32::max_value() as u64 { panic!("u32 exceeded! algorithms::p variable temp2 {} > {}", temp2, u32::max_value()); }
+
+    let temp3 = temp1 + temp2;
+    if temp3 > u32::max_value() as u64 { panic!("u32 exceeded! algorithms::p variable temp3 {} > {}", temp3, u32::max_value()); }
+
+    *d += temp1 as u32;
+    *h = temp3 as u32;
+}
