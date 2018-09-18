@@ -246,7 +246,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
 
     // setup encryption round keys
 
-    let rk_ptr = rk.as_ptr() as *mut u32;
+    let mut rk_ptr = rk.as_ptr() as *mut u32;
 
     match nbits {
         128 => {
@@ -264,7 +264,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
                 temp_rk[6]  = temp_rk[2] ^ temp_rk[5];
                 temp_rk[7]  = temp_rk[3] ^ temp_rk[6];
 
-                unsafe { rk_ptr.add(shifting); }
+                rk_ptr = unsafe { rk_ptr.add(shifting) };
             }
         },
         192 => {
@@ -284,7 +284,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
                 temp_rk[10]  = temp_rk[4] ^ temp_rk[9];
                 temp_rk[11]  = temp_rk[5] ^ temp_rk[10];
 
-                unsafe { rk_ptr.add(shifting); }
+                rk_ptr = unsafe { rk_ptr.add(shifting) };
             }
         },
         256 => {
@@ -312,7 +312,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
                 temp_rk[14]  = temp_rk[6] ^ temp_rk[13];
                 temp_rk[15]  = temp_rk[7] ^ temp_rk[14];
 
-                unsafe { rk_ptr.add(shifting); }
+                rk_ptr = unsafe { rk_ptr.add(shifting) };
             }
         },
         _ => ()
@@ -337,18 +337,19 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
 
     // equivelant to C's
     //     *A++ == *B++
-    let ptr_cp_incr = |a: *mut u32, b: *mut u32| {
+    let ptr_cp_incr = |mut a: *mut u32, mut b: *mut u32| {
         let ref_a: &mut u32 = unsafe { &mut *a };
         let ref_b: &u32 = unsafe { &*b };
 
         *ref_a = *ref_b;
 
-        unsafe { a.add(1); b.add(1); }
+        a = unsafe { a.add(1) };
+        b = unsafe { b.add(1) };
     };
 
     for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
 
-    let sk_from_key_table_flip = || {
+    let sk_from_key_table_flip = |mut sk_ptr: *mut u32, mut rk_ptr: *mut u32| {
         let ref_sk: &mut u32 = unsafe { &mut *sk_ptr };
         let ref_rk: &u32 = unsafe { &*rk_ptr };
 
@@ -357,16 +358,17 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
                   tables.kt.kt2[ (*(ref_rk) >>  8) as u8 as usize ] ^
                   tables.kt.kt3[ (*(ref_rk)      ) as u8 as usize ];
 
-        unsafe { sk_ptr.add(1); rk_ptr.add(1); }
+        sk_ptr = unsafe { sk_ptr.add(1) };
+        rk_ptr = unsafe { rk_ptr.add(1) };
     };
 
     for i in 1..context.nr {
-        unsafe { rk_ptr.sub(8); }
+        rk_ptr = unsafe { rk_ptr.sub(8) };
 
-        for _ in 0..4 { sk_from_key_table_flip(); }
+        for _ in 0..4 { sk_from_key_table_flip(sk_ptr, rk_ptr); }
     }
 
-    unsafe { rk_ptr.sub(8); }
+    rk_ptr = unsafe { rk_ptr.sub(8) };
 
     for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
 }
@@ -381,7 +383,7 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
     let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
     let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
 
-    let rk_ptr = rk.as_ptr() as *const u32;
+    let mut rk_ptr = rk.as_ptr() as *const u32;
 
     let mut remaining = 0;
 
@@ -393,7 +395,7 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                           y1: &u32,
                           y2: &u32,
                           y3: &u32| {
-        unsafe { rk_ptr.add(4); } remaining += 4;
+        rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
 
         let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
 
@@ -446,7 +448,7 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
 
     // last round
 
-    unsafe { rk_ptr.add(4); } remaining += 4;
+    rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
     let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
 
     x0 = temp_rk[0] ^ ((tables.ft.fsb[ (y0 >> 24) as u8 as usize ] as u32) << 24) ^
@@ -485,7 +487,7 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
     let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
     let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
 
-    let rk_ptr = rk.as_ptr() as *const u32;
+    let mut rk_ptr = rk.as_ptr() as *const u32;
 
     let mut remaining = 0;
 
@@ -497,7 +499,7 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                           y1: &u32,
                           y2: &u32,
                           y3: &u32| {
-        unsafe { rk_ptr.add(4); } remaining += 4;
+        rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
 
         let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
 
@@ -550,7 +552,7 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
 
     // last round
 
-    unsafe { rk_ptr.add(4); } remaining += 4;
+    rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
     let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
 
     x0 = temp_rk[0] ^ ((tables.rt.rsb[ (y0 >> 24) as u8 as usize ] as u32) << 24) ^

@@ -157,7 +157,7 @@ pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32
         process(&mut context.state, &context.buffer);
 
         *length -= fill;
-        unsafe { ipt_ptr = ipt_ptr.add(fill as usize); }
+        ipt_ptr = unsafe { ipt_ptr.add(fill as usize) };
         left = 0;
     }
 
@@ -165,7 +165,7 @@ pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32
         let temp_input: &[u8] = unsafe { slice::from_raw_parts(ipt_ptr, 64) };
         process(&mut context.state, temp_input);
         *length -= 64;
-        unsafe { ipt_ptr = ipt_ptr.add(64); }
+        ipt_ptr = unsafe { ipt_ptr.add(64); }
     }
 
     if *length != 0 {
