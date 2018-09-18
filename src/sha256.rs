@@ -125,14 +125,14 @@ pub(crate) fn process(state: &mut [u32], data: &[u8]) {
     p( c, d, e, &mut f, g, h, a, &mut b, r(&mut w, 62), 0xBEF9A3F7 );
     p( b, c, d, &mut e, f, g, h, &mut a, r(&mut w, 63), 0xC67178F2 );
 
-    state[0] += a;
-    state[1] += b;
-    state[2] += c;
-    state[3] += d;
-    state[4] += e;
-    state[5] += f;
-    state[6] += g;
-    state[7] += h;
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+    state[5] = state[5].wrapping_add(f);
+    state[6] = state[6].wrapping_add(g);
+    state[7] = state[7].wrapping_add(h);
 }
 
 pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32) {
