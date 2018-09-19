@@ -30,6 +30,7 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
         }
     )
 }
+
 #[inline(always)] pub(crate) fn rotr8(x: u32) -> u32 {  ( ( x.wrapping_shl(24) ) & 0xFFFFFFFF )
                                               | ( ( x & 0xFFFFFFFF ).wrapping_shr(8) ) }
 
