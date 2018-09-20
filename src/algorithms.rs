@@ -39,7 +39,7 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
 // ROTRⁿ(x) = (x >> n) ∨ (x << w - n)
 #[inline(always)] fn rotr(x: u32, n: u32) -> u32 { shr(x,n) | (x.wrapping_shl(32 - n)) }
 
-// Ch( x, y, z) = ( x ^ y) ⊕  ( x ^ z)
+// Ch( x, y, z) = ( x ^ y) ⊕  ( ¬x ^ z)
 #[inline(always)] fn ch(x: u32, y: u32, z: u32) -> u32 { (x & y) ^ (!x & z) }
 // Maj( x, y, z) = ( x ^ y) ⊕ ( x ^ z) ⊕ ( y ^ z)
 #[inline(always)] fn maj(x: u32, y: u32, z: u32) -> u32 { (x & y) ^ (x & z) ^ (y & z) }
