@@ -186,18 +186,38 @@ pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32
 }
 
 pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
+    let mut last: u32 = context.total[0] & 0x3F;
+
+    context.buffer[last as usize] = 0x80;
+    last += 1;
+
+    let memset = |t: *mut u8, val: u8, qty: usize| {
+        let temp_target: &mut [u8] = unsafe { slice::from_raw_parts_mut(t, qty) };
+        for i in temp_target { *i = val; }
+    };
+
+    let bfr_ptr = context.buffer.as_ptr() as *mut u8;
+
+    if last < 56 {
+        // Enough room for padding + length in current block
+        memset(unsafe { bfr_ptr.add(last as usize) }, 0, 56 - last as usize);
+    } else {
+        // We'll need an extra block.
+        memset(unsafe { bfr_ptr.add(last as usize) }, 0, 64 - last as usize);
+
+        process(&mut context.state, &context.buffer);
+
+        memset(bfr_ptr, 0, 56);
+    };
+
     let high: u32 = (context.total[0] >> 29) | (context.total[1] <<  3);
     let low:  u32 =  context.total[0] <<  3;
     let msglen: &mut [u8] = &mut [0u8; 8];
 
-    put_u32(high, msglen, 0);
-    put_u32(low , msglen, 4);
+    put_u32(high, &mut context.buffer, 56);
+    put_u32(low , &mut context.buffer, 60);
 
-    let last: u32 = context.total[0] & 0x3F;
-    let mut padn: u32 = if last < 56 { 56 - last } else { 120 - last };
-
-    update(context, SHA256_PADDING.as_slice(), &mut padn);
-    update(context, msglen, &mut 8);
+    process(&mut context.state, &context.buffer);
 
     put_u32(context.state[0], digest,  0);
     put_u32(context.state[1], digest,  4);
@@ -209,11 +229,51 @@ pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
     put_u32(context.state[7], digest, 28);
 }
 
-
 #[test]
-fn it_works() {
+fn one_block_message() {
     let msg: &'static str = "abc";
     let val: &'static str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    let mut ctx = starts(None);
+
+    update(&mut ctx, msg.as_bytes(), &mut (msg.len() as u32));
+
+    let mut sha256sum: [u8; 32] = [0u8; 32];
+
+    finish(&mut ctx, &mut sha256sum);
+
+    assert_eq!( ctx.hex_digest(), val );
+}
+
+#[test]
+fn multi_block_message() {
+    let msg: &'static str = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    let val: &'static str = "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1";
+
+    let mut ctx = starts(None);
+
+    update(&mut ctx, msg.as_bytes(), &mut (msg.len() as u32));
+
+    assert_eq!(ctx.state[0], 0x6a09e667);
+    assert_eq!(ctx.state[1], 0xbb67ae85);
+    assert_eq!(ctx.state[2], 0x3c6ef372);
+    assert_eq!(ctx.state[3], 0xa54ff53a);
+    assert_eq!(ctx.state[4], 0x510e527f);
+    assert_eq!(ctx.state[5], 0x9b05688c);
+    assert_eq!(ctx.state[6], 0x1f83d9ab);
+    assert_eq!(ctx.state[7], 0x5be0cd19);
+
+    let mut sha256sum: [u8; 32] = [0u8; 32];
+
+    finish(&mut ctx, &mut sha256sum);
+
+    assert_eq!( ctx.hex_digest(), val );
+}
+
+#[test]
+fn long_message() {
+    let msg = "a".repeat(1000000);
+    let val: &'static str = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
 
     let mut ctx = starts(None);
 
