@@ -1,4 +1,5 @@
 use crate::fixed_tables::{FORWARD_SBOX, REVERSE_SBOX};
+use crate::util::{memset, SliceToHex};
 use std::slice;
 
 use crate::algorithms::{
@@ -12,6 +13,16 @@ pub struct AesContext {
     erk: [u32; 64],
     drk: [u32; 64],
     nr: isize,
+}
+
+impl AesContext {
+    fn new() -> Self {
+        AesContext {
+            erk: [0u32; 64],
+            drk: [0u32; 64],
+            nr: 0,
+        }
+    }
 }
 
 // forward S-box & tables
@@ -165,11 +176,11 @@ pub fn gen_tables() -> ContextTables {
         rsb[x as usize] = i as u8;
     }
 
-    /* generate the forward and reverse tables */
+    // generate the forward and reverse tables
 
     let mul = |a,b| {
         if a != 0 && b != 0 {
-            pow[(log[a as usize] + log[b as usize]) as usize % 255] as u8
+            pow[(log[a as usize].wrapping_add(log[b as usize])) as usize % 255] as u8
         } else {
             0
         }
@@ -179,10 +190,10 @@ pub fn gen_tables() -> ContextTables {
         let x: u8 = fsb[i];
         let y = xtime( x );
 
-        ft0[i] =   ( x ^ y ) as u32 ^
-                 ( x <<  8 ) as u32 ^
-                 ( x << 16 ) as u32 ^
-                 ( y << 24 ) as u32;
+        ft0[i] = ( x ^ y) as u32 ^
+                 ( (x as u32) <<  8 ) ^
+                 ( (x as u32) << 16 ) ^
+                 ( (y as u32) << 24 );
 
         ft0[i] &= 0xFFFFFFFF;
 
@@ -375,7 +386,7 @@ pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8],
 
 // AES 128-bit block encryption routine
 
-pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], mut output: [u8; 16]) {
+pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], output: &mut [u8; 16]) {
     let rk = context.erk;
 
     let mut x0 = get_u32(&input,  0); x0 ^= rk[0];
@@ -471,15 +482,15 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                       ((tables.ft.fsb[ (y1 >>  8) as u8 as usize ] as u32) <<  8) ^
                       ( tables.ft.fsb[  y2        as u8 as usize ] as u32       );
 
-    put_u32( x0, &mut output,  0 );
-    put_u32( x1, &mut output,  4 );
-    put_u32( x2, &mut output,  8 );
-    put_u32( x3, &mut output, 12 );
+    put_u32( x0, output,  0 );
+    put_u32( x1, output,  4 );
+    put_u32( x2, output,  8 );
+    put_u32( x3, output, 12 );
 }
 
 // AES 128-bit block decryption routine
 
-pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], mut output: [u8; 16]) {
+pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], output: &mut [u8; 16]) {
     let rk = context.drk;
 
     let mut x0 = get_u32(&input,  0); x0 ^= rk[0];
@@ -575,8 +586,99 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                       ((tables.rt.rsb[ (y1 >>  8) as u8 as usize ] as u32) <<  8) ^
                       ( tables.rt.rsb[  y0        as u8 as usize ] as u32       );
 
-    put_u32( x0, &mut output,  0 );
-    put_u32( x1, &mut output,  4 );
-    put_u32( x2, &mut output,  8 );
-    put_u32( x3, &mut output, 12 );
+    put_u32( x0, output,  0 );
+    put_u32( x1, output,  4 );
+    put_u32( x2, output,  8 );
+    put_u32( x3, output, 12 );
+}
+
+
+static AES_ENC_TEST: [[u8; 16]; 3] = [
+    [ 0xA0, 0x43, 0x77, 0xAB, 0xE2, 0x59, 0xB0, 0xD0,
+      0xB5, 0xBA, 0x2D, 0x40, 0xA5, 0x01, 0x97, 0x1B ],
+    [ 0x4E, 0x46, 0xF8, 0xC5, 0x09, 0x2B, 0x29, 0xE2,
+      0x9A, 0x97, 0x1A, 0x0C, 0xD1, 0xF6, 0x10, 0xFB ],
+    [ 0x1F, 0x67, 0x63, 0xDF, 0x80, 0x7A, 0x7E, 0x70,
+      0x96, 0x0D, 0x4C, 0xD3, 0x11, 0x8E, 0x60, 0x1A ]
+];
+
+static AES_DEC_TEST: [[u8; 16]; 3] = [
+    [ 0xF5, 0xBF, 0x8B, 0x37, 0x13, 0x6F, 0x2E, 0x1F,
+      0x6B, 0xEC, 0x6F, 0x57, 0x20, 0x21, 0xE3, 0xBA ],
+    [ 0xF1, 0xA8, 0x1B, 0x68, 0xF6, 0xE5, 0xA6, 0x27,
+      0x1A, 0x8C, 0xB2, 0x4E, 0x7D, 0x94, 0x91, 0xEF ],
+    [ 0x4D, 0xE0, 0xC6, 0xDF, 0x7C, 0xB1, 0x69, 0x72,
+      0x84, 0x60, 0x4D, 0x60, 0x27, 0x1B, 0xC5, 0x9A ]
+];
+
+#[test]
+fn c3_aes256_nk8_nk14() {
+    let plaintext = "00112233445566778899aabbccddeeff";
+    let mut buf = [0u8; 16];
+    let key: [u8; 32] = [
+        0x00,        0x01,        0x02,        0x03,
+        0x04,        0x05,        0x06,        0x07,
+        0x08,        0x09,        0x0a,        0x0b,
+        0x0c,        0x0d,        0x0e,        0x0f,
+        0x10,        0x11,        0x12,        0x13,
+        0x14,        0x15,        0x16,        0x17,
+        0x18,        0x19,        0x1a,        0x1b,
+        0x1c,        0x1d,        0x1e,        0x1f,
+    ];
+
+    let mut ctx = AesContext::new();
+    let mut tables = gen_tables();
+
+    set_key(&mut ctx, &mut tables, &key, 256);
+
+    encrypt(&mut ctx, &mut tables, buf, &mut buf);
+
+    assert_eq!(<[u8]>::slice_to_hex(&buf), "63");
+}
+
+#[test]
+fn test_encrypt() {
+    let mut buf = [0u8; 16];
+    let mut key = [0u8; 32];
+
+    let mut ctx = AesContext::new();
+    let mut tables = gen_tables();
+
+    for n in 0..3 {
+        memset(buf.as_ptr() as *mut u8, 0, 16);
+        memset(key.as_ptr() as *mut u8, 0, 16 + n * 8);
+
+        for i in 0..400 {
+            set_key(&mut ctx, &mut tables, &key, (128 + n * 64) as isize);
+
+            for j in 0..999 {
+                encrypt(&mut ctx, &mut tables, buf, &mut buf);
+            }
+
+            if n > 0 {
+                let mut j = 0;
+                loop {
+                    if j >= (n << 3) { break; }
+
+                    key[j] ^= buf[j + 16 - (n << 3)];
+                    j += 1;
+                }
+            }
+
+            encrypt(&mut ctx, &mut tables, buf, &mut buf);
+
+            for j in 0..16 {
+                key[j + (n << 3)] ^= buf[j];
+            }
+        }
+        for i in 0..16 {
+            assert_eq!(buf[i], AES_ENC_TEST[n][i]);
+        }
+    }
+}
+
+#[test]
+fn test_decrypt() {
+    for n in 0..3 {
+    }
 }

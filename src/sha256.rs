@@ -3,6 +3,7 @@ use core::array::FixedSizeArray; // for `as_slice`
 use std::{slice, ptr, str};
 
 use crate::algorithms::*;
+use crate::util::{memset, SliceToHex};
 
 #[derive(Clone)]
 pub(crate) struct SHA256Context {
@@ -13,13 +14,7 @@ pub(crate) struct SHA256Context {
 
 impl SHA256Context {
     fn hex_digest(&self) -> String {
-        let mut hex_digest = String::with_capacity(64);
-
-        for i in 0..8 {
-            hex_digest.push_str(&format!("{:0>8x}", self.state[i]));
-        }
-
-        hex_digest
+        <[u32]>::slice_to_hex(&self.state)
     }
 }
 
@@ -190,11 +185,6 @@ pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
 
     context.buffer[last as usize] = 0x80;
     last += 1;
-
-    let memset = |t: *mut u8, val: u8, qty: usize| {
-        let temp_target: &mut [u8] = unsafe { slice::from_raw_parts_mut(t, qty) };
-        for i in temp_target { *i = val; }
-    };
 
     let bfr_ptr = context.buffer.as_ptr() as *mut u8;
 

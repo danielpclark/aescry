@@ -103,6 +103,7 @@ mod fixed_tables;
 mod algorithms;
 mod aes;
 mod sha256;
+mod util;
 use crate::sha256::*;
 
 pub struct Extension;
