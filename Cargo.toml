@@ -16,4 +16,4 @@ categories = ["cryptography"]
 travis-ci = { repository = "danielpclark/aescry", branch = "master" }
 
 [dependencies]
-byteorder = "1"
+byteorder = "1.4.3"

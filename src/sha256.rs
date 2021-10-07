@@ -1,5 +1,4 @@
 // FIPS 180-2 compliant
-use core::array::FixedSizeArray; // for `as_slice`
 use std::{slice, ptr, str};
 
 use crate::algorithms::*;
