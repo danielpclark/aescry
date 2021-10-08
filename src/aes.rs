@@ -1,6 +1,6 @@
 use crate::fixed_tables::{FORWARD_SBOX, REVERSE_SBOX};
 use crate::util::{memset, SliceToHex};
-use std::slice;
+use std::{slice,fmt};
 
 use crate::algorithms::{
     get_u32,
@@ -13,6 +13,20 @@ pub struct AesContext {
     erk: [u32; 64],
     drk: [u32; 64],
     nr: isize,
+}
+
+impl fmt::Display for AesContext {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "erk: {:?}, drk: {:?}, nr: {}", self.erk, self.drk, self.nr)
+    }
+}
+
+impl fmt::Debug for AesContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let erk_n: u32 = self.erk.iter().sum();
+        let drk_n: u32 = self.drk.iter().sum();
+        write!(f, "AesContext: erk -> {}, drk -> {}, nr -> {}", erk_n, drk_n, &self.nr)
+    }
 }
 
 impl AesContext {
@@ -37,6 +51,23 @@ pub struct ForwardTables {
     pub ft3: [u32; 256],
 }
 
+impl fmt::Display for ForwardTables {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "fsb: {:?}, ft0: {:?}, ft1: {:?}, ft2: {:?}, ft3: {:?}", self.fsb, self.ft0, self.ft1, self.ft2, self.ft3)
+    }
+}
+
+impl fmt::Debug for ForwardTables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let fsb_n: u8 = self.fsb.iter().sum();
+        let ft0_n: u32 = self.ft0.iter().sum();
+        let ft1_n: u32 = self.ft1.iter().sum();
+        let ft2_n: u32 = self.ft2.iter().sum();
+        let ft3_n: u32 = self.ft3.iter().sum();
+        write!(f, "ForwardTables: fsb -> {}, ft0 -> {}, ft1 -> {}, ft2 -> {}, ft3 -> {}", fsb_n, ft0_n, ft1_n, ft2_n, ft3_n)
+    }
+}
+
 impl ForwardTables {
     const fn new() -> ForwardTables {
         ForwardTables {
@@ -59,6 +90,23 @@ pub struct ReverseTables {
     pub rt1: [u32; 256],
     pub rt2: [u32; 256],
     pub rt3: [u32; 256],
+}
+
+impl fmt::Display for ReverseTables {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "rsb: {:?}, rt0: {:?}, rt1: {:?}, rt2: {:?}, rt3: {:?}", self.rsb, self.rt0, self.rt1, self.rt2, self.rt3)
+    }
+}
+
+impl fmt::Debug for ReverseTables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rsb_n: u8 =  self.rsb.iter().sum();
+        let rt0_n: u32 = self.rt0.iter().sum();
+        let rt1_n: u32 = self.rt1.iter().sum();
+        let rt2_n: u32 = self.rt2.iter().sum();
+        let rt3_n: u32 = self.rt3.iter().sum();
+        write!(f, "ReverseTables: rsb -> {}, rt0 -> {}, rt1 -> {}, rt2 -> {}, rt3 -> {}", rsb_n, rt0_n, rt1_n, rt2_n, rt3_n)
+    }
 }
 
 impl ReverseTables {
@@ -93,6 +141,23 @@ pub struct KeyTables {
     pub kt3: [u32; 256],
 }
 
+
+impl fmt::Display for KeyTables {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "init: {}, kt0: {:?}, kt1: {:?}, kt2: {:?}, kt3: {:?}", self.init, self.kt0, self.kt1, self.kt2, self.kt3)
+    }
+}
+
+impl fmt::Debug for KeyTables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kt0_n: u32 = self.kt0.iter().sum();
+        let kt1_n: u32 = self.kt1.iter().sum();
+        let kt2_n: u32 = self.kt2.iter().sum();
+        let kt3_n: u32 = self.kt3.iter().sum();
+        write!(f, "KeyTables: init -> {}, kt0 -> {}, kt1 -> {}, kt2 -> {}, kt3 -> {}", self.init, kt0_n, kt1_n, kt2_n, kt3_n)
+    }
+}
+
 impl KeyTables {
     const fn new() -> KeyTables {
         KeyTables {
@@ -105,6 +170,7 @@ impl KeyTables {
     }
 }
 
+#[derive(Debug)]
 pub struct ContextTables {
     ft: ForwardTables,
     rt: ReverseTables,
@@ -678,7 +744,7 @@ fn test_encrypt() {
 }
 
 #[test]
-fn test_decrypt() {
+fn todo_test_decrypt() {
     for n in 0..3 {
     }
 }
