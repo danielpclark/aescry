@@ -6,6 +6,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use super::KeyRef;
 use crate::algorithms::{get_u32, put_u32};
 use crate::fixed_tables::{FORWARD_SBOX, REVERSE_SBOX};
 use crate::zeroize::Zeroize;
@@ -102,7 +103,7 @@ pub(crate) struct KeySchedule {
 
 impl KeySchedule {
     /// Expand a 16, 24 or 32 octet key.  The caller guarantees the length.
-    pub(crate) fn new(key: &[u8]) -> Self {
+    pub(crate) fn new(key: KeyRef<'_>) -> Self {
         let (erk, nr) = expand_encryption_key(key, sub_word);
         let mut ks = KeySchedule { erk, drk: [0u32; 64], nr };
 
@@ -146,19 +147,15 @@ impl Drop for KeySchedule {
 /// Expand a 16, 24 or 32 octet key into encryption round key words
 /// (FIPS-197 section 5.2) using the given SubWord, and return them with the
 /// number of rounds.
-pub(crate) fn expand_encryption_key(key: &[u8], sub_word: impl Fn(u32) -> u32) -> ([u32; 64], usize) {
-    let nk = key.len() / 4;
-    let nr = match key.len() {
-        16 => 10,
-        24 => 12,
-        32 => 14,
-        _ => unreachable!("invalid AES key length"),
-    };
+pub(crate) fn expand_encryption_key(key: KeyRef<'_>, sub_word: impl Fn(u32) -> u32) -> ([u32; 64], usize) {
+    let nk = key.words();
+    let nr = key.rounds();
+    let bytes = key.as_bytes();
 
     let mut rk = [0u32; 64];
 
     for i in 0..nk {
-        rk[i] = get_u32(key, i * 4);
+        rk[i] = get_u32(bytes, i * 4);
     }
 
     for i in nk..(nr + 1) * 4 {
@@ -421,12 +418,11 @@ mod tests {
     /// FIPS-197 Appendix A.3: expansion of a 256-bit cipher key.
     #[test]
     fn fips197_a3_key_expansion() {
-        let key: Vec<u8> = (0..32).map(|i| [
+        let key: [u8; 32] = [
             0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81,
             0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4,
-        ][i]).collect();
-
-        let ks = KeySchedule::new(&key);
+        ];
+        let ks = KeySchedule::new(KeyRef::K256(&key));
 
         assert_eq!(ks.erk[8], 0x9ba35411);
         assert_eq!(ks.erk[12], 0xa8b09c1a);

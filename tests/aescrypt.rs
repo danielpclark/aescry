@@ -1,7 +1,7 @@
 mod common;
 
-use aescry::aescrypt::{self, Decryptor, Encryptor, Extension};
-use aescry::{detect, Error, Version};
+use aescry::aescrypt::{self, Decryptor, Encryptor, Extension, Iterations, Limits};
+use aescry::{detect, Error, Limit, StreamError, Version};
 use std::io::{self, Read};
 use std::path::PathBuf;
 
@@ -13,8 +13,8 @@ fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {}", path.display(), e))
 }
 
-fn fast(password: &str) -> Encryptor<'_> {
-    Encryptor::new(password).unwrap().iterations(1000)
+fn fast(password: &str) -> Encryptor {
+    Encryptor::new(password).unwrap().iterations(Iterations::new(1000).unwrap())
 }
 
 #[test]
@@ -94,11 +94,10 @@ fn rejects_bad_parameters() {
     assert!(matches!(Decryptor::new(""), Err(Error::EmptyPassword)));
     assert!(matches!(aescrypt::encrypt("", b"x"), Err(Error::EmptyPassword)));
 
-    assert!(matches!(fast("pw").iterations(0).encrypt(b"x"), Err(Error::InvalidIterations(0))));
-    assert!(matches!(
-        fast("pw").iterations(5_000_001).encrypt(b"x"),
-        Err(Error::InvalidIterations(5_000_001))
-    ));
+    // iteration counts are checked when the value is created
+    assert!(matches!(Iterations::new(0), Err(Error::InvalidIterations(0))));
+    assert!(matches!(Iterations::new(5_000_001), Err(Error::InvalidIterations(5_000_001))));
+    assert!(Iterations::try_from(5_000_000u32).is_ok());
 }
 
 #[test]
@@ -106,14 +105,29 @@ fn refuses_excessive_iterations_in_a_stream() {
     let mut encrypted = fast("pw").without_default_extensions().encrypt(b"x").unwrap();
     // iterations follow "AES", version, reserved and the empty extension list
     encrypted[7..11].copy_from_slice(&5_000_001u32.to_be_bytes());
-    assert!(matches!(aescrypt::decrypt("pw", &encrypted), Err(Error::InvalidIterations(5_000_001))));
+    assert!(matches!(
+        aescrypt::decrypt("pw", &encrypted),
+        Err(Error::LimitExceeded(Limit::Iterations { found: 5_000_001, max: 5_000_000 }))
+    ));
 
     encrypted[7..11].copy_from_slice(&0u32.to_be_bytes());
-    assert!(matches!(aescrypt::decrypt("pw", &encrypted), Err(Error::InvalidIterations(0))));
+    assert!(matches!(aescrypt::decrypt("pw", &encrypted), Err(Error::InvalidStream(StreamError::ZeroIterations))));
 
     let encrypted = fast("pw").encrypt(b"x").unwrap();
-    let strict = Decryptor::new("pw").unwrap().max_iterations(999);
-    assert!(matches!(strict.decrypt(&encrypted), Err(Error::InvalidIterations(1000))));
+    let strict = Decryptor::new("pw").unwrap().limits(Limits::DEFAULT.max_iterations(999));
+    assert!(matches!(
+        strict.decrypt(&encrypted),
+        Err(Error::LimitExceeded(Limit::Iterations { found: 1000, max: 999 }))
+    ));
+
+    // the normal API cannot raise limits above the defaults
+    encrypted_with(5_000_001);
+    fn encrypted_with(n: u32) {
+        let lenient = Decryptor::new("pw").unwrap().limits(Limits::DEFAULT.max_iterations(u32::MAX));
+        let mut stream = fast("pw").without_default_extensions().encrypt(b"x").unwrap();
+        stream[7..11].copy_from_slice(&n.to_be_bytes());
+        assert!(matches!(lenient.decrypt(&stream), Err(Error::LimitExceeded(Limit::Iterations { .. }))));
+    }
 }
 
 #[test]

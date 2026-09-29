@@ -21,6 +21,7 @@
 mod ni;
 mod soft;
 
+use crate::secret::Secret;
 use crate::Error;
 use core::fmt;
 
@@ -62,6 +63,160 @@ impl Backend {
     }
 }
 
+/// A borrowed key whose length is one of the three AES key sizes.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyRef<'a> {
+    K128(&'a [u8; 16]),
+    K192(&'a [u8; 24]),
+    K256(&'a [u8; 32]),
+}
+
+impl<'a> KeyRef<'a> {
+    fn from_slice(key: &'a [u8]) -> Result<Self, Error> {
+        if let Ok(k) = key.try_into() {
+            return Ok(KeyRef::K128(k));
+        }
+        if let Ok(k) = key.try_into() {
+            return Ok(KeyRef::K192(k));
+        }
+        if let Ok(k) = key.try_into() {
+            return Ok(KeyRef::K256(k));
+        }
+        Err(Error::InvalidKeyLength(key.len()))
+    }
+
+    pub(crate) fn as_bytes(&self) -> &'a [u8] {
+        match *self {
+            KeyRef::K128(k) => k,
+            KeyRef::K192(k) => k,
+            KeyRef::K256(k) => k,
+        }
+    }
+
+    /// Key length in 32-bit words (Nk).
+    pub(crate) fn words(&self) -> usize {
+        self.as_bytes().len() / 4
+    }
+
+    /// Number of rounds (Nr).
+    pub(crate) fn rounds(&self) -> usize {
+        match self {
+            KeyRef::K128(_) => 10,
+            KeyRef::K192(_) => 12,
+            KeyRef::K256(_) => 14,
+        }
+    }
+}
+
+/// An AES key of a valid size, wiped when dropped.
+///
+/// Converting raw bytes checks the length once; everything that takes an
+/// `AesKey` can rely on it.
+///
+/// ```
+/// use aescry::aes::{Aes, AesKey, KeySize};
+///
+/// let key = AesKey::try_from(&[7u8; 24][..])?;
+/// assert_eq!(key.size(), KeySize::Aes192);
+/// assert!(AesKey::try_from(&[7u8; 20][..]).is_err());
+///
+/// let cipher = Aes::from_key(&AesKey::generate(KeySize::Aes256)?);
+/// assert_eq!(cipher.key_size(), 32);
+/// # Ok::<(), aescry::Error>(())
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub enum AesKey {
+    /// A 128-bit key.
+    Aes128(Secret<[u8; 16]>),
+    /// A 192-bit key.
+    Aes192(Secret<[u8; 24]>),
+    /// A 256-bit key.
+    Aes256(Secret<[u8; 32]>),
+}
+
+/// The three AES key sizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KeySize {
+    /// 16 octets.
+    Aes128,
+    /// 24 octets.
+    Aes192,
+    /// 32 octets.
+    Aes256,
+}
+
+impl KeySize {
+    /// The key length in octets.
+    pub fn len(self) -> usize {
+        match self {
+            KeySize::Aes128 => 16,
+            KeySize::Aes192 => 24,
+            KeySize::Aes256 => 32,
+        }
+    }
+
+    /// Always false: no key size is empty.
+    pub fn is_empty(self) -> bool {
+        false
+    }
+}
+
+impl AesKey {
+    /// Generate a random key from the operating system's random number
+    /// generator.
+    pub fn generate(size: KeySize) -> Result<Self, Error> {
+        Ok(match size {
+            KeySize::Aes128 => AesKey::Aes128(Secret::new(crate::random::bytes()?)),
+            KeySize::Aes192 => AesKey::Aes192(Secret::new(crate::random::bytes()?)),
+            KeySize::Aes256 => AesKey::Aes256(Secret::new(crate::random::bytes()?)),
+        })
+    }
+
+    /// The key size.
+    pub fn size(&self) -> KeySize {
+        match self {
+            AesKey::Aes128(_) => KeySize::Aes128,
+            AesKey::Aes192(_) => KeySize::Aes192,
+            AesKey::Aes256(_) => KeySize::Aes256,
+        }
+    }
+
+    /// Borrow the key octets.
+    pub fn expose_secret(&self) -> &[u8] {
+        self.key_ref().as_bytes()
+    }
+
+    /// Make a copy of the key.  Both copies are wiped when dropped.
+    pub fn clone_secret(&self) -> Self {
+        match self {
+            AesKey::Aes128(k) => AesKey::Aes128(k.clone_secret()),
+            AesKey::Aes192(k) => AesKey::Aes192(k.clone_secret()),
+            AesKey::Aes256(k) => AesKey::Aes256(k.clone_secret()),
+        }
+    }
+
+    fn key_ref(&self) -> KeyRef<'_> {
+        match self {
+            AesKey::Aes128(k) => KeyRef::K128(k.expose_secret()),
+            AesKey::Aes192(k) => KeyRef::K192(k.expose_secret()),
+            AesKey::Aes256(k) => KeyRef::K256(k.expose_secret()),
+        }
+    }
+}
+
+impl TryFrom<&[u8]> for AesKey {
+    type Error = Error;
+
+    /// Copy a 16, 24 or 32 octet key.
+    fn try_from(key: &[u8]) -> Result<Self, Error> {
+        Ok(match KeyRef::from_slice(key)? {
+            KeyRef::K128(k) => AesKey::Aes128(Secret::new(*k)),
+            KeyRef::K192(k) => AesKey::Aes192(Secret::new(*k)),
+            KeyRef::K256(k) => AesKey::Aes256(Secret::new(*k)),
+        })
+    }
+}
+
 /// Round keys for whichever backend is in use.
 #[derive(Clone)]
 enum Inner {
@@ -71,8 +226,17 @@ enum Inner {
 }
 
 impl Inner {
-    /// Expand a 16, 24 or 32 octet key.  The caller guarantees the length.
-    fn new(key: &[u8], backend: Backend) -> Result<Self, Error> {
+    /// Expand a key with the best available backend.
+    fn auto(key: KeyRef<'_>) -> Self {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(ks) = ni::KeySchedule::new(key) {
+            return Inner::Ni(ks);
+        }
+        Inner::Soft(soft::KeySchedule::new(key))
+    }
+
+    /// Expand a key with a specific backend.
+    fn new(key: KeyRef<'_>, backend: Backend) -> Result<Self, Error> {
         match backend {
             Backend::Software => Ok(Inner::Soft(soft::KeySchedule::new(key))),
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -147,7 +311,7 @@ pub trait BlockCipher {
 }
 
 macro_rules! fixed_key_aes {
-    ($name:ident, $bits:expr, $len:expr) => {
+    ($name:ident, $variant:ident, $bits:expr, $len:expr) => {
         #[doc = concat!("AES with a ", stringify!($bits), "-bit key.")]
         ///
         /// The fastest available backend is chosen automatically; see
@@ -163,7 +327,7 @@ macro_rules! fixed_key_aes {
 
             /// Expand the key into encryption and decryption round keys.
             pub fn new(key: &[u8; $len]) -> Self {
-                $name { inner: Inner::new(key, Backend::detect()).expect("detected backend is available") }
+                $name { inner: Inner::auto(KeyRef::$variant(key)) }
             }
 
             /// Create a cipher from a key slice, which must be exactly
@@ -176,7 +340,7 @@ macro_rules! fixed_key_aes {
             /// Create a cipher that uses a specific backend.  Returns
             /// [`Error::BackendUnavailable`] if this CPU does not support it.
             pub fn with_backend(key: &[u8; $len], backend: Backend) -> Result<Self, Error> {
-                Ok($name { inner: Inner::new(key, backend)? })
+                Ok($name { inner: Inner::new(KeyRef::$variant(key), backend)? })
             }
 
             /// The backend in use.
@@ -204,9 +368,9 @@ macro_rules! fixed_key_aes {
     };
 }
 
-fixed_key_aes!(Aes128, 128, 16);
-fixed_key_aes!(Aes192, 192, 24);
-fixed_key_aes!(Aes256, 256, 32);
+fixed_key_aes!(Aes128, K128, 128, 16);
+fixed_key_aes!(Aes192, K192, 192, 24);
+fixed_key_aes!(Aes256, K256, 256, 32);
 
 /// AES with a key size chosen at runtime (16, 24 or 32 octets).
 ///
@@ -226,16 +390,18 @@ pub struct Aes {
 impl Aes {
     /// Create a cipher from a 16, 24 or 32 octet key.
     pub fn new(key: &[u8]) -> Result<Self, Error> {
-        Self::with_backend(key, Backend::detect())
+        Ok(Aes { inner: Inner::auto(KeyRef::from_slice(key)?) })
+    }
+
+    /// Create a cipher from a validated key; this cannot fail.
+    pub fn from_key(key: &AesKey) -> Self {
+        Aes { inner: Inner::auto(key.key_ref()) }
     }
 
     /// Create a cipher that uses a specific backend.  Returns
     /// [`Error::BackendUnavailable`] if this CPU does not support it.
     pub fn with_backend(key: &[u8], backend: Backend) -> Result<Self, Error> {
-        match key.len() {
-            16 | 24 | 32 => Ok(Aes { inner: Inner::new(key, backend)? }),
-            n => Err(Error::InvalidKeyLength(n)),
-        }
+        Ok(Aes { inner: Inner::new(KeyRef::from_slice(key)?, backend)? })
     }
 
     /// The key size in octets.

@@ -1,7 +1,8 @@
 //! AES Crypt stream header parsing and encoding.
 
+use super::types::Limits;
 use crate::detect::Version;
-use crate::Error;
+use crate::{Error, ExtensionError, Limit, StreamError};
 use std::io::{self, Read};
 
 /// A header extension: an identifier and its contents.
@@ -31,13 +32,13 @@ impl Extension {
         let value = value.as_ref();
 
         if identifier.is_empty() {
-            return Err(Error::InvalidExtension("the identifier is empty"));
+            return Err(Error::InvalidExtension(ExtensionError::EmptyIdentifier));
         }
         if identifier.contains('\0') {
-            return Err(Error::InvalidExtension("the identifier contains a NUL octet"));
+            return Err(Error::InvalidExtension(ExtensionError::NulInIdentifier));
         }
         if identifier.len() + 1 + value.len() > MAX_EXTENSION_LEN {
-            return Err(Error::InvalidExtension("the extension is longer than 65535 octets"));
+            return Err(Error::InvalidExtension(ExtensionError::InvalidLength));
         }
 
         let mut raw = Vec::with_capacity(identifier.len() + 1 + value.len());
@@ -51,7 +52,7 @@ impl Extension {
     /// Create an empty container extension of `len` octets (1 to 65535).
     pub fn container(len: usize) -> Result<Self, Error> {
         if len == 0 || len > MAX_EXTENSION_LEN {
-            return Err(Error::InvalidExtension("container length must be 1 to 65535 octets"));
+            return Err(Error::InvalidExtension(ExtensionError::InvalidLength));
         }
 
         Ok(Extension { raw: vec![0u8; len] })
@@ -63,7 +64,7 @@ impl Extension {
     pub fn from_bytes(raw: impl Into<Vec<u8>>) -> Result<Self, Error> {
         let raw = raw.into();
         if raw.is_empty() || raw.len() > MAX_EXTENSION_LEN {
-            return Err(Error::InvalidExtension("extension length must be 1 to 65535 octets"));
+            return Err(Error::InvalidExtension(ExtensionError::InvalidLength));
         }
         Ok(Extension { raw })
     }
@@ -175,7 +176,7 @@ impl Header {
 }
 
 /// Map a premature end of stream to a format error.
-pub(crate) fn truncated(e: io::Error, what: &'static str) -> Error {
+pub(crate) fn truncated(e: io::Error, what: StreamError) -> Error {
     if e.kind() == io::ErrorKind::UnexpectedEof {
         Error::InvalidStream(what)
     } else {
@@ -183,10 +184,12 @@ pub(crate) fn truncated(e: io::Error, what: &'static str) -> Error {
     }
 }
 
-/// Read and parse a header, up to and including the public IV.
-pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool) -> Result<Header, Error> {
+/// Read and parse a header, up to and including the public IV, within
+/// `limits`.  Nothing is allocated for an extension until its length has
+/// been checked against the limits.
+pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool, limits: &Limits) -> Result<Header, Error> {
     let mut start = [0u8; 5];
-    reader.read_exact(&mut start).map_err(|e| truncated(e, "truncated header"))?;
+    reader.read_exact(&mut start).map_err(|e| truncated(e, StreamError::TruncatedHeader))?;
 
     if &start[..3] != crate::detect::MAGIC {
         return Err(Error::NotAesCrypt);
@@ -195,11 +198,16 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool) -> Res
     let version = Version::from_u8(start[3]).ok_or(Error::UnsupportedVersion(start[3]))?;
     let mut len = 5;
 
+    // the fixed fields after the extensions: iterations (v3) and the IV
+    let tail_len = if version >= Version::V3 { 4 + 16 } else { 16 };
+    let header_too_long = Error::LimitExceeded(Limit::HeaderLength { max: limits.max_header_len });
+
     let mut extensions = Vec::new();
+    let mut count = 0usize;
     if version >= Version::V2 {
         loop {
             let mut ext_len = [0u8; 2];
-            reader.read_exact(&mut ext_len).map_err(|e| truncated(e, "truncated extensions"))?;
+            reader.read_exact(&mut ext_len).map_err(|e| truncated(e, StreamError::TruncatedExtensions))?;
             len += 2;
 
             let ext_len = u16::from_be_bytes(ext_len) as usize;
@@ -207,8 +215,17 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool) -> Res
                 break;
             }
 
+            count += 1;
+            if count > limits.max_extensions {
+                return Err(Error::LimitExceeded(Limit::Extensions { max: limits.max_extensions }));
+            }
+            // this extension, the terminator and the fixed fields must fit
+            if len + ext_len + 2 + tail_len > limits.max_header_len {
+                return Err(header_too_long);
+            }
+
             let mut raw = vec![0u8; ext_len];
-            reader.read_exact(&mut raw).map_err(|e| truncated(e, "truncated extensions"))?;
+            reader.read_exact(&mut raw).map_err(|e| truncated(e, StreamError::TruncatedExtensions))?;
             len += ext_len;
 
             if keep_extensions {
@@ -217,16 +234,20 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool) -> Res
         }
     }
 
+    if len + tail_len > limits.max_header_len {
+        return Err(header_too_long);
+    }
+
     let mut iterations = None;
     if version >= Version::V3 {
         let mut n = [0u8; 4];
-        reader.read_exact(&mut n).map_err(|e| truncated(e, "truncated header"))?;
+        reader.read_exact(&mut n).map_err(|e| truncated(e, StreamError::TruncatedHeader))?;
         iterations = Some(u32::from_be_bytes(n));
         len += 4;
     }
 
     let mut iv = [0u8; 16];
-    reader.read_exact(&mut iv).map_err(|e| truncated(e, "truncated header"))?;
+    reader.read_exact(&mut iv).map_err(|e| truncated(e, StreamError::TruncatedHeader))?;
     len += 16;
 
     Ok(Header { version, reserved: start[4], extensions, iterations, iv, len })
@@ -249,14 +270,14 @@ pub(crate) fn write_header(
         for ext in extensions {
             let len = ext.raw.len();
             if len == 0 || len > MAX_EXTENSION_LEN {
-                return Err(Error::InvalidExtension("extension length must be 1 to 65535 octets"));
+                return Err(Error::InvalidExtension(ExtensionError::InvalidLength));
             }
             out.extend_from_slice(&(len as u16).to_be_bytes());
             out.extend_from_slice(&ext.raw);
         }
         out.extend_from_slice(&[0, 0]);
     } else if !extensions.is_empty() {
-        return Err(Error::InvalidExtension("versions 0 and 1 do not support extensions"));
+        return Err(Error::InvalidExtension(ExtensionError::UnsupportedVersion));
     }
 
     if version >= Version::V3 {
@@ -300,6 +321,45 @@ mod tests {
         assert!(Extension::container(65536).is_err());
     }
 
+    /// A reader that repeats one extension forever.
+    struct EndlessExtensions {
+        pos: usize,
+    }
+
+    impl Read for EndlessExtensions {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            const HEADER: &[u8] = b"AES\x03\x00";
+            const EXT: &[u8] = b"\x00\x04ABC\x00";
+            for b in buf.iter_mut() {
+                *b = if self.pos < HEADER.len() {
+                    HEADER[self.pos]
+                } else {
+                    EXT[(self.pos - HEADER.len()) % EXT.len()]
+                };
+                self.pos += 1;
+            }
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn limits_bound_hostile_headers() {
+        let result = read_header(&mut EndlessExtensions { pos: 0 }, true, &Limits::DEFAULT);
+        assert!(matches!(result, Err(Error::LimitExceeded(Limit::Extensions { max: 256 }))));
+
+        let small = Limits::DEFAULT.max_header_len(64).max_extensions(1_000_000);
+        let result = read_header(&mut EndlessExtensions { pos: 0 }, false, &small);
+        assert!(matches!(result, Err(Error::LimitExceeded(Limit::HeaderLength { max: 64 }))));
+
+        // a single maximum-size extension needs a larger header limit
+        let mut big = b"AES\x02\x00\xff\xff".to_vec();
+        big.extend(vec![b'A'; 65535]);
+        big.extend([0u8; 18]);
+        assert!(read_header(&mut &big[..], true, &Limits::DEFAULT).is_ok());
+        let tight = Limits::DEFAULT.max_header_len(1000);
+        assert!(matches!(read_header(&mut &big[..], true, &tight), Err(Error::LimitExceeded(_))));
+    }
+
     #[test]
     fn header_roundtrip() {
         let exts = vec![Extension::new("CREATED_BY", "test").unwrap(), Extension::container(128).unwrap()];
@@ -309,7 +369,7 @@ mod tests {
             let mut out = Vec::new();
             write_header(&mut out, version, 7, e, 1234, &[9u8; 16]).unwrap();
 
-            let header = read_header(&mut &out[..], true).unwrap();
+            let header = read_header(&mut &out[..], true, &Limits::DEFAULT).unwrap();
             assert_eq!(header.version(), version);
             assert_eq!(header.reserved(), 7);
             assert_eq!(header.extensions(), e);
@@ -321,10 +381,17 @@ mod tests {
 
     #[test]
     fn header_errors() {
-        assert!(matches!(read_header(&mut &b"XYZ\x03\x00"[..], true), Err(Error::NotAesCrypt)));
-        assert!(matches!(read_header(&mut &b"AES\x07\x00"[..], true), Err(Error::UnsupportedVersion(7))));
-        assert!(matches!(read_header(&mut &b"AES\x02"[..], true), Err(Error::InvalidStream(_))));
-        assert!(matches!(read_header(&mut &b"AES\x02\x00\x00\x05ab"[..], true), Err(Error::InvalidStream(_))));
+        let limits = Limits::DEFAULT;
+        assert!(matches!(read_header(&mut &b"XYZ\x03\x00"[..], true, &limits), Err(Error::NotAesCrypt)));
+        assert!(matches!(read_header(&mut &b"AES\x07\x00"[..], true, &limits), Err(Error::UnsupportedVersion(7))));
+        assert!(matches!(
+            read_header(&mut &b"AES\x02"[..], true, &limits),
+            Err(Error::InvalidStream(StreamError::TruncatedHeader))
+        ));
+        assert!(matches!(
+            read_header(&mut &b"AES\x02\x00\x00\x05ab"[..], true, &limits),
+            Err(Error::InvalidStream(StreamError::TruncatedExtensions))
+        ));
         assert!(write_header(&mut Vec::new(), Version::V1, 0, &[Extension::container(4).unwrap()], 0, &[0; 16]).is_err());
     }
 }

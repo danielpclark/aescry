@@ -26,6 +26,14 @@ pub type HmacSha512 = Hmac<Sha512>;
 /// The largest block size of any supported hash.
 const MAX_BLOCK_SIZE: usize = 128;
 
+// Digest is sealed, so these are all the hashes Hmac can be used with.
+const _: () = assert!(
+    crate::sha256::BLOCK_SIZE <= MAX_BLOCK_SIZE
+        && crate::sha512::BLOCK_SIZE <= MAX_BLOCK_SIZE
+        && crate::sha256::OUTPUT_SIZE <= crate::sha256::BLOCK_SIZE
+        && crate::sha512::OUTPUT_SIZE <= crate::sha512::BLOCK_SIZE
+);
+
 /// An incremental HMAC computation.
 #[derive(Clone)]
 pub struct Hmac<H: Digest> {
@@ -43,8 +51,6 @@ impl<H: Digest> fmt::Debug for Hmac<H> {
 impl<H: Digest> Hmac<H> {
     /// Start an HMAC with `key`, which may be any length.
     pub fn new(key: &[u8]) -> Self {
-        assert!(H::BLOCK_SIZE <= MAX_BLOCK_SIZE);
-
         let mut block = [0u8; MAX_BLOCK_SIZE];
         let block = &mut block[..H::BLOCK_SIZE];
 

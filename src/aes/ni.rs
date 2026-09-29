@@ -12,6 +12,7 @@ use core::arch::x86::*;
 use core::arch::x86_64::*;
 
 use super::soft::expand_encryption_key;
+use super::KeyRef;
 use crate::algorithms::put_u32;
 
 /// Whether this CPU supports the AES-NI instructions.
@@ -34,7 +35,7 @@ pub(crate) struct KeySchedule {
 impl KeySchedule {
     /// Expand a 16, 24 or 32 octet key, or return `None` if the CPU does not
     /// support AES-NI.
-    pub(crate) fn new(key: &[u8]) -> Option<Self> {
+    pub(crate) fn new(key: KeyRef<'_>) -> Option<Self> {
         if !available() {
             return None;
         }
@@ -44,7 +45,7 @@ impl KeySchedule {
     }
 
     #[target_feature(enable = "aes,sse2")]
-    unsafe fn expand(key: &[u8]) -> Self {
+    unsafe fn expand(key: KeyRef<'_>) -> Self {
         // Build the FIPS-197 schedule with a constant-time SubWord.
         let (mut words, nr) = expand_encryption_key(key, |w| sub_word(w));
 

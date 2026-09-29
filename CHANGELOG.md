@@ -4,6 +4,70 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0-beta.2] - Unreleased
+
+Type safety for 1.0: raw bytes are validated once into distinct types, and
+the risky toolkit operations are separate types. This release changes the
+API.
+
+### Added
+- `secret::Secret<T>`: wiped on drop, never printed, constant-time `==`, no
+  implicit `Clone`, contents read through `expose_secret()`.
+- Validated AES Crypt values in `aescrypt` (also re-exported by
+  `security`): `Password` (text or raw bytes), `PublicIv`, `SessionIv`,
+  `SessionKey`, `DerivedKey` (with `DerivedKey::derive`) and `Iterations`
+  (never zero; at most 5,000,000 unless created with `new_unbounded`).
+  Values of the same size are different types.
+- `aes::AesKey` and `aes::KeySize`; `Aes::from_key` cannot fail.
+- `aescrypt::Limits` bounds header length (1 MiB), extension count (256) and
+  PBKDF2 iterations (5,000,000) before anything is allocated.
+  `Decryptor::limits` can only lower them, and `RawDecryptor::limits` can
+  raise them. Also `aescrypt::read_header_with_limits` and
+  `security::inspect_with_limits`.
+- `Error::LimitExceeded(Limit)` and the `StreamError`, `ExtensionError` and
+  `Limit` enums.
+- Security toolkit type states:
+  - `RawEncryptor<Random>` by default; `.deterministic(..)` gives
+    `RawEncryptor<Deterministic>` for fixed IVs and session key.
+  - `RawDecryptor<Verified>` by default; `.skip_verification()` gives
+    `RawDecryptor<Unverified>`, whose results are `Unauthenticated<T>`.
+    Getting the value out takes `into_authentic()` (fails unless every HMAC
+    matched) or `assume_authentic()`.
+  - `EncryptKey` (password or derived key) and `DecryptKey` (password,
+    derived key, or session IV and key). Encrypting with a session key is
+    no longer expressible.
+- `#[must_use]` on `Verification`, `DecryptReport`, `Decrypted` and
+  `Unauthenticated`.
+- A hostile-input test: thousands of random and mutated streams through
+  every parser and decryptor must never panic.
+
+### Changed
+- `Error::InvalidStream` carries a `StreamError` and `Error::InvalidExtension`
+  an `ExtensionError`, instead of strings.
+- `Encryptor::iterations` takes `Iterations`. `Encryptor` and `Decryptor`
+  own their password, so they no longer have a lifetime and are no longer
+  `Clone`.
+- `Decryptor::max_iterations` is replaced by `Decryptor::limits`.
+- Streams asking for too many iterations return
+  `Error::LimitExceeded(Limit::Iterations { .. })`, and zero iterations
+  return `Error::InvalidStream(StreamError::ZeroIterations)`.
+- `security`: `Key` is replaced by `EncryptKey` / `DecryptKey`. The builder
+  methods `public_iv` / `session_iv` / `session_key` are replaced by
+  `deterministic`. `DecryptReport` returns typed keys. `Decrypted` has
+  accessors instead of public fields. `verify` takes `&DecryptKey`.
+  `ecb_encrypt` / `ecb_decrypt` take `&AesKey`.
+- `security::derive_key` and `security::password_bytes` are replaced by
+  `DerivedKey::derive` and `Password::encoded`.
+- The `digest::Digest` trait is sealed. `Hmac::new` no longer has a runtime
+  assertion; block sizes are checked at compile time.
+- The AES key schedule takes a typed key, removing its unreachable
+  invalid-length branch, and automatic backend selection no longer uses
+  `expect`.
+
+### Fixed
+- Reading a stream with an unbounded number of header extensions (for
+  example from a socket) could use unbounded memory.
+
 ## [1.0.0-beta.1] - Unreleased
 
 The security toolkit. This is a beta of the 1.0 API.
@@ -169,6 +233,7 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[1.0.0-beta.2]: https://github.com/danielpclark/aescry/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/danielpclark/aescry/compare/v0.6.0...v1.0.0-beta.1
 [0.6.0]: https://github.com/danielpclark/aescry/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danielpclark/aescry/compare/v0.4.0...v0.5.0

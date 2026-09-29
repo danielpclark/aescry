@@ -28,7 +28,7 @@ random number generator.
 
 ```toml
 [dependencies]
-aescry = "1.0.0-beta.1"
+aescry = "1.0.0-beta.2"
 ```
 
 `aescry` requires Rust 1.63 or newer.
@@ -58,10 +58,10 @@ gives `Error::InvalidPassword`, and modified or truncated data gives
 `Encryptor` and `Decryptor` add settings, streaming and files:
 
 ```rust,no_run
-use aescry::aescrypt::{Decryptor, Encryptor, Extension};
+use aescry::aescrypt::{Decryptor, Encryptor, Extension, Iterations};
 
 let encryptor = Encryptor::new("correct horse battery staple")?
-    .iterations(1_000_000) // PBKDF2 iterations (default 600,000)
+    .iterations(Iterations::new(1_000_000)?) // 1 to 5,000,000; default 600,000
     .extension(Extension::new("urn:example:owner", "alice")?);
 
 encryptor.encrypt_file("report.pdf", "report.pdf.aes")?;
@@ -83,6 +83,8 @@ encryptor.encrypt_stream(input, output)?;
   discard what it wrote.
 - `aescrypt::read_header` reads the unencrypted header: version, iteration
   count and extensions.
+- Reading is bounded by `Limits`: at most 5,000,000 PBKDF2 iterations, a
+  1 MiB header and 256 extensions. `Decryptor::limits` can lower these.
 
 | Format version | Read | Write            | Key derivation     | Written by                  |
 |----------------|------|------------------|--------------------|-----------------------------|
@@ -95,21 +97,28 @@ encryptor.encrypt_stream(input, output)?;
 
 The `security` module gives direct control over every input, for work such
 as testing other AES Crypt implementations, generating test vectors,
-forensics, and recovering your own data.
+forensics, and recovering your own data. Raw bytes are checked once, when
+they become typed values, and the risky operations are separate types, so
+they can't be used by accident.
 
 ```rust
-use aescry::security::{inspect, verify, Key, RawDecryptor, RawEncryptor};
+use aescry::security::{
+    inspect, verify, DecryptKey, EncryptKey, PublicIv, RawDecryptor, RawEncryptor, SessionIv, SessionKey,
+};
 use aescry::Version;
 
 // Any octets can be the password: not necessarily UTF-8 or UTF-16.
 let password: &[u8] = &[0x00, 0xFF, 0xC3, 0x28];
 
-// Fixed IVs and session key make the output reproducible.
-let stream = RawEncryptor::new(Key::RawPassword(password))
+// Fixed IVs and session key make the output reproducible. This is a
+// separate type, RawEncryptor<Deterministic>, because reusing IVs is unsafe.
+let stream = RawEncryptor::new(EncryptKey::raw_password(password))
     .version(Version::V2)           // any format version, 0 to 3
-    .public_iv(&[0x01; 16])?
-    .session_iv(&[0x02; 16])?
-    .session_key(&[0x03; 32])?
+    .deterministic(
+        PublicIv::try_from(&[0x01; 16][..])?, // raw bytes, length-checked once
+        SessionIv::from([0x02; 16]),
+        SessionKey::from([0x03; 32]),
+    )
     .encrypt(b"test vector")?;
 
 // Map the stream's structure without a password.
@@ -117,31 +126,47 @@ let layout = inspect(&stream)?;
 assert_eq!(layout.plaintext_len(), Some(11));
 
 // Check both HMACs without producing plaintext.
-assert!(verify(Key::RawPassword(password), &stream)?.is_authentic());
+assert!(verify(&DecryptKey::raw_password(password), &stream)?.is_authentic());
 
-// Decrypt, and get the derived key and session key.
-let opened = RawDecryptor::new(Key::RawPassword(password)).decrypt(&stream)?;
-assert_eq!(&opened.plaintext[..], b"test vector");
-let derived = *opened.report.derived_key().unwrap();
+// Decrypt, and get the derived key and session key (wiped when dropped).
+let opened = RawDecryptor::new(DecryptKey::raw_password(password)).decrypt(&stream)?;
+assert_eq!(opened.plaintext(), b"test vector");
+let report = opened.report();
 
 // Later: skip key derivation, or bypass the password entirely.
-let again = RawDecryptor::new(Key::DerivedKey(&derived)).decrypt(&stream)?;
-let session = Key::Session { iv: opened.report.session_iv(), key: opened.report.session_key() };
+let derived = report.derived_key().unwrap().clone_secret();
+let again = RawDecryptor::new(DecryptKey::Derived(derived)).decrypt(&stream)?;
+let session = DecryptKey::Session(*report.session_iv(), report.session_key().clone_secret());
 let again = RawDecryptor::new(session).decrypt(&stream)?;
 # let _ = again;
 # Ok::<(), aescry::Error>(())
 ```
 
+Decrypting a damaged or tampered stream is possible, but the result is
+wrapped so it can't be used as if it were verified:
+
+```rust,no_run
+use aescry::security::{DecryptKey, RawDecryptor};
+
+let damaged = std::fs::read("damaged.aes")?;
+let result = RawDecryptor::new(DecryptKey::password("pw")?)
+    .skip_verification()           // RawDecryptor<Unverified>
+    .decrypt(&damaged)?;           // Unauthenticated<Decrypted>
+
+println!("authentic: {}", result.is_authentic());
+let recovered = result.assume_authentic(); // an explicit, visible choice
+# let _ = recovered;
+# Ok::<(), aescry::Error>(())
+```
+
 The toolkit also offers:
-- `derive_key` and `password_bytes` show exactly what the key derivation
-  receives.
-- `RawDecryptor::skip_verification` decrypts damaged or tampered streams and
-  reports which HMACs failed.
-- `RawDecryptor::max_iterations` accepts iteration counts beyond the normal
-  limit.
+- `Password::encoded` and `DerivedKey::derive` show exactly what the key
+  derivation receives and produces.
+- `RawDecryptor::limits` can raise `Limits` above the defaults, for example
+  for streams with more than 5,000,000 iterations.
 - `Extension::from_bytes` writes arbitrary, even malformed, header extensions
   for testing parsers.
-- `ecb_encrypt` / `ecb_decrypt` are raw block operations.
+- `ecb_encrypt` / `ecb_decrypt` are raw block operations on an `AesKey`.
 
 These tools make it easy to do unsafe things, like reusing IVs or trusting
 unauthenticated plaintext. Use `aescrypt` for everyday encryption.
@@ -324,6 +349,15 @@ let version = detect::from_reader(std::io::stdin())?;
 
 ## Security
 
+- **Memory safety:** untrusted bytes are handled only by safe Rust. The only
+  `unsafe` code is the AES-NI backend (fixed 16-octet blocks) and the
+  volatile writes in `zeroize`. Raw bytes for passwords, IVs and keys are
+  length-checked once, when they become typed values (`AesKey`, `PublicIv`,
+  `SessionIv`, `SessionKey`, `DerivedKey`, `Iterations`, `Password`).
+- **Hostile streams:** parsing is bounded by `Limits` before anything is
+  allocated. Malformed input returns an error, never a panic; the test suite
+  feeds thousands of random and mutated streams to every parser and
+  decryptor to check this.
 - On x86 and x86-64 CPUs with AES-NI (nearly all since 2010), AES uses the
   hardware instructions. They run in constant time and are much faster. The
   key schedule is also computed without secret-dependent table lookups.
@@ -332,18 +366,19 @@ let version = detect::from_reader(std::io::stdin())?;
   on the key and data, which can leak them to an attacker who can measure it
   precisely, such as another tenant on the same machine.
   `Backend::is_constant_time()` tells you which case applies.
-- Key schedules, hash and MAC states, derived keys, session keys and AES Crypt
-  buffers are wiped from memory when dropped. `zeroize::Zeroizing` does the
-  same for your own values.
+- Key schedules, hash and MAC states, passwords, derived keys, session keys
+  and AES Crypt buffers are wiped from memory when dropped. `secret::Secret`
+  holds your own secrets the same way, with constant-time comparison and no
+  `Debug` output; `zeroize::Zeroizing` wipes other values.
 - `cbc::decrypt` reports bad padding as an error. If callers can observe that
   error for ciphertexts they choose, they can decrypt data (a padding oracle
   attack). Verify a MAC before decrypting.
-- `Debug` output of cipher, hash and MAC types never includes key material.
+- `Debug` output never includes key material or passwords.
 - AES Crypt header extensions are neither encrypted nor authenticated. Don't
   trust their contents.
 - Version 3 streams asking for more than 5,000,000 PBKDF2 iterations are
   refused, so a hostile file can't tie up the CPU for long.
-  `Decryptor::max_iterations` lowers the limit.
+  `Decryptor::limits` lowers the limit.
 - `Hmac::verify` compares tags in constant time. `Hmac::verify_truncated`
   refuses tags shorter than 80 bits.
 
@@ -359,6 +394,7 @@ Each release adds one feature set; see the [changelog](CHANGELOG.md).
 | 0.5           | AES Crypt file format: password-based encryption and decryption of buffers, streams and files     |
 | 0.6           | Hardening: hardware AES (AES-NI) backend and wiping secrets from memory                           |
 | 1.0.0-beta.1  | Security toolkit: raw-byte passwords, IVs and keys; stream inspection and verification            |
+| 1.0.0-beta.2  | Type safety: validated key/IV/iteration types, `Secret<T>`, typestate toolkit, resource limits     |
 
 ## Development
 

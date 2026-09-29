@@ -20,10 +20,11 @@ pub mod hmac;
 pub mod kdf;
 pub mod padding;
 pub mod random;
+pub mod secret;
 pub mod security;
 pub mod sha256;
 pub mod sha512;
 pub mod zeroize;
 
 pub use crate::detect::Version;
-pub use crate::error::Error;
+pub use crate::error::{Error, ExtensionError, Limit, StreamError};
