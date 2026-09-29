@@ -1,3 +1,7 @@
+// Kernel code: fixed-size message schedules and blocks indexed by constant
+// offsets and loop bounds; arithmetic is modular (wrapping) by design.
+#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
 #[inline(always)]
 pub(crate) fn get_u32(data: &[u8], index: usize) -> u32 {
     (data[index] as u32) << 24

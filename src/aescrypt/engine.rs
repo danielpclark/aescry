@@ -87,8 +87,9 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
         (Zeroizing::new(*derived.expose_secret()), *params.public_iv.as_bytes())
     } else {
         let mut block = Zeroizing::new([0u8; 48]);
-        block[..16].copy_from_slice(params.session_iv.as_bytes());
-        block[16..].copy_from_slice(params.session_key.expose_secret());
+        let (iv_part, key_part) = block.split_at_mut(16);
+        iv_part.copy_from_slice(params.session_iv.as_bytes());
+        key_part.copy_from_slice(params.session_key.expose_secret());
 
         CbcEncryptor::new(Aes256::new(derived.expose_secret()), params.public_iv.as_bytes())
             .encrypt_in_place(&mut *block)?;
@@ -115,50 +116,45 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
     let mut total = 0u64;
 
     loop {
-        let n = match reader.read(&mut buf[filled..]) {
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e.into()),
-        };
+        let n = read_some(&mut reader, buf.get_mut(filled..).unwrap_or_default())?;
         if n == 0 {
             break;
         }
 
-        filled += n;
-        total += n as u64;
+        // read_some guarantees n <= CHUNK_SIZE - filled
+        filled = filled.saturating_add(n);
+        total = total.saturating_add(n as u64);
 
         if filled == buf.len() {
-            encryptor.encrypt_in_place(&mut buf[..])?;
-            mac.update(&buf[..]);
-            writer.write_all(&buf[..])?;
+            encryptor.encrypt_in_place(&mut buf)?;
+            mac.update(&buf);
+            writer.write_all(&buf)?;
             filled = 0;
         }
     }
 
     // encrypt the remaining whole blocks and the final partial block;
-    // filled < CHUNK_SIZE here, and rounding it up to a block stays within it
+    // filled < CHUNK_SIZE, a multiple of 16, so rounding up to a block fits
     let rem = filled % 16;
-
-    let modulo = if version >= Version::V3 {
+    let (pad, modulo) = if version >= Version::V3 {
         // PKCS#7: 1 to 16 octets of padding, always
-        let pad = 16 - rem;
-        buf[filled..filled + pad].fill(pad as u8);
-        filled += pad;
-        0
+        (16usize.saturating_sub(rem), 0)
     } else if rem > 0 {
         // versions 0-2: the final block size is recorded separately; the
         // padding contents are not significant
-        let pad = 16 - rem;
-        buf[filled..filled + pad].fill(pad as u8);
-        filled += pad;
-        rem as u8
+        (16usize.saturating_sub(rem), rem as u8)
     } else {
-        0
+        (0, 0)
     };
 
-    encryptor.encrypt_in_place(&mut buf[..filled])?;
-    mac.update(&buf[..filled]);
-    writer.write_all(&buf[..filled])?;
+    let tail = buf.get_mut(..filled.saturating_add(pad)).ok_or_else(internal_bounds)?;
+    if let Some(padding) = tail.get_mut(filled..) {
+        padding.fill(pad as u8);
+    }
+
+    encryptor.encrypt_in_place(tail)?;
+    mac.update(tail);
+    writer.write_all(tail)?;
 
     if version == Version::V1 || version == Version::V2 {
         writer.write_all(&[modulo])?;
@@ -195,6 +191,9 @@ pub(crate) struct DecryptInfo {
     pub(crate) key_hmac_ok: Option<bool>,
     /// Whether the ciphertext HMAC matched.
     pub(crate) message_hmac_ok: bool,
+    /// Versions 0-2 only: whether the (unauthenticated) final block size
+    /// agrees with the padding in the final block.
+    pub(crate) final_block_ok: Option<bool>,
 }
 
 /// Decrypt an AES Crypt stream from `reader` to `writer`.
@@ -254,32 +253,28 @@ pub(crate) fn decrypt<R: Read, W: Write>(
     let mut decryptor = CbcDecryptor::new(Aes256::new(bulk_key.expose_secret()), bulk_iv.as_bytes());
     let mut mac = HmacSha256::new(bulk_key.expose_secret());
     // sized so it never reallocates (which would leave unwiped copies)
-    let mut buf = Zeroizing::new(Vec::with_capacity(CHUNK_SIZE + trailer_len + 32));
+    let mut buf = Zeroizing::new(Vec::with_capacity(CHUNK_SIZE.saturating_add(trailer_len).saturating_add(32)));
     let mut chunk = Zeroizing::new(vec![0u8; CHUNK_SIZE]);
     let mut written = 0u64;
+    let hold_back = trailer_len.saturating_add(16);
 
     loop {
-        let n = match reader.read(&mut chunk) {
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e.into()),
-        };
+        let n = read_some(&mut reader, &mut chunk)?;
         if n == 0 {
             break;
         }
 
-        buf.extend_from_slice(&chunk[..n]);
+        buf.extend_from_slice(chunk.get(..n).ok_or_else(internal_bounds)?);
 
         // hold back the trailer and the final block
-        if buf.len() > trailer_len + 16 {
-            let ready = (buf.len() - trailer_len - 16) / 16 * 16;
-            if ready > 0 {
-                mac.update(&buf[..ready]);
-                decryptor.decrypt_in_place(&mut buf[..ready])?;
-                writer.write_all(&buf[..ready])?;
-                written += ready as u64;
-                buf.drain(..ready);
-            }
+        let ready = buf.len().saturating_sub(hold_back) & !15; // whole blocks
+        if ready > 0 {
+            let part = buf.get_mut(..ready).ok_or_else(internal_bounds)?;
+            mac.update(part);
+            decryptor.decrypt_in_place(part)?;
+            writer.write_all(part)?;
+            written = written.saturating_add(ready as u64);
+            buf.drain(..ready);
         }
     }
 
@@ -307,6 +302,7 @@ pub(crate) fn decrypt<R: Read, W: Write>(
 
     decryptor.decrypt_in_place(last)?;
 
+    let mut final_block_ok = None;
     let plaintext: &[u8] = if version >= Version::V3 {
         if written == 0 && last.is_empty() {
             return Err(Error::InvalidStream(StreamError::MissingFinalBlock));
@@ -319,16 +315,29 @@ pub(crate) fn decrypt<R: Read, W: Write>(
         }
     } else {
         // versions 0-2: the low 4 bits give the final block's length, 0
-        // meaning a full block; `last` is empty or one 16-octet block
-        match (modulo & 0x0f) as usize {
-            0 => last,
-            n => last.get(..n).unwrap_or(last),
-        }
+        // meaning a full block; `last` is empty or one 16-octet block.
+        //
+        // That octet is not covered by any HMAC, so it is checked against the
+        // final block: writers leave the high bits clear and pad the unused
+        // octets with their count, as PKCS#7 does.  A mismatch is reported,
+        // not rejected, since the format does not require that padding.
+        let size = (modulo & 0x0f) as usize;
+        let (plaintext, padding_ok) = match (size, last.len()) {
+            (0, _) => (&last[..], true),
+            (_, 0) => (&last[..], false),
+            (n, _) => {
+                let (plaintext, padding) = last.split_at(n.min(last.len()));
+                let expected = 16usize.saturating_sub(n) as u8;
+                (plaintext, padding.iter().all(|&b| b == expected))
+            }
+        };
+        final_block_ok = Some(padding_ok && modulo & 0xf0 == 0);
+        plaintext
     };
 
     writer.write_all(plaintext)?;
     writer.flush()?;
-    written += plaintext.len() as u64;
+    written = written.saturating_add(plaintext.len() as u64);
 
     Ok(DecryptInfo {
         header,
@@ -338,7 +347,34 @@ pub(crate) fn decrypt<R: Read, W: Write>(
         session_key: bulk_key,
         key_hmac_ok,
         message_hmac_ok,
+        final_block_ok,
     })
+}
+
+/// Read into `buf`, retrying on interruption.  Returns 0 at the end of the
+/// stream.  A reader that claims to have read more than `buf` holds is an
+/// error rather than a panic.
+fn read_some<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize, Error> {
+    loop {
+        match reader.read(buf) {
+            Ok(n) if n <= buf.len() => return Ok(n),
+            Ok(_) => {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "reader returned more octets than the buffer holds",
+                )))
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// An internal buffer bound was violated.  The streaming code keeps its
+/// buffers within fixed sizes, so this is never expected; it is an error
+/// instead of a panic in case that reasoning is ever wrong.
+fn internal_bounds() -> Error {
+    Error::Io(io::Error::new(io::ErrorKind::Other, "internal buffer bounds violated"))
 }
 
 /// Find the key and IV that encrypt the message: for version 0 these are
@@ -417,6 +453,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn every_version_roundtrips() {
         let ext = [Extension::new("CREATED_BY", "test").unwrap()];
         let sk = session_key();
@@ -446,6 +483,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn deterministic_with_fixed_parameters() {
         let (sk, pw) = (session_key(), text("pw"));
         for version in VERSIONS {
@@ -455,6 +493,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn raw_passwords_match_text_encoding() {
         let sk = session_key();
         let pw = text("pässword");
@@ -473,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn decrypts_with_recovered_keys() {
         let (sk, pw) = (session_key(), text("pw"));
         for version in VERSIONS {

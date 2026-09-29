@@ -95,7 +95,11 @@ impl<'a> KeyRef<'a> {
 
     /// Key length in 32-bit words (Nk).
     pub(crate) fn words(&self) -> usize {
-        self.as_bytes().len() / 4
+        match self {
+            KeyRef::K128(_) => 4,
+            KeyRef::K192(_) => 6,
+            KeyRef::K256(_) => 8,
+        }
     }
 
     /// Number of rounds (Nr).
@@ -437,7 +441,7 @@ impl BlockCipher for Aes {
 impl fmt::Debug for Aes {
     // never print key material
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Aes{} {{ .. }}", self.key_size() * 8)
+        write!(f, "Aes{} {{ .. }}", self.key_size().saturating_mul(8))
     }
 }
 

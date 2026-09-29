@@ -19,6 +19,12 @@
 //! # Ok::<(), aescry::Error>(())
 //! ```
 //!
+//! Versions 0–2 do not authenticate the final block size, so a modified
+//! legacy file can lose up to 15 octets from its end without failing the
+//! HMAC checks.  Version 3 authenticates its padding.  The
+//! [`security`](crate::security) toolkit can detect most such changes (see
+//! `Verification::final_block`).
+//!
 //! Reading a stream is bounded by [`Limits`]: at most
 //! [`MAX_ITERATIONS`] of PBKDF2, a 1 MiB header and 256 extensions, so a
 //! hostile stream cannot make a reader spend unbounded memory or time.
@@ -143,7 +149,7 @@ impl Encryptor {
     }
 
     fn all_extensions(&self) -> Result<Vec<Extension>, Error> {
-        let mut extensions = Vec::with_capacity(self.extensions.len() + 2);
+        let mut extensions = Vec::with_capacity(self.extensions.len().saturating_add(2));
 
         if self.default_extensions {
             extensions.push(Extension::new("CREATED_BY", concat!("aescry ", env!("CARGO_PKG_VERSION")))?);
@@ -174,7 +180,7 @@ impl Encryptor {
 
     /// Encrypt `plaintext` and return the AES Crypt stream.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut out = Vec::with_capacity(plaintext.len() + 400);
+        let mut out = Vec::with_capacity(plaintext.len().saturating_add(400));
         self.stream(plaintext, &mut out)?;
         Ok(out)
     }

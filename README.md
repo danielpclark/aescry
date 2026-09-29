@@ -39,7 +39,7 @@ hardware instructions in constant time.
 
 ```toml
 [dependencies]
-aescry = "1.0.0-beta.2"
+aescry = "1.0.0-rc.1"
 ```
 
 `aescry` requires Rust 1.63 or newer.
@@ -221,6 +221,13 @@ let strict = Decryptor::new("pw")?.limits(Limits::DEFAULT.max_iterations(1_000_0
 | 2       | ✓    | `security` only  | 8192 × SHA-256     | AES Crypt 3.x, pyAesCrypt |
 | 1       | ✓    | `security` only  | 8192 × SHA-256     | older AES Crypt           |
 | 0       | ✓    | `security` only  | 8192 × SHA-256     | older AES Crypt           |
+
+> **Legacy formats (0–2) don't authenticate the final block size.** Someone
+> who can modify an old `.aes` file can drop up to 15 octets from the end of
+> the plaintext without failing either HMAC. `security::verify` and
+> `RawDecryptor` report this through `Verification::final_block` /
+> `is_consistent()`. Version 3, which `aescrypt` writes, authenticates its
+> padding. Re-encrypt old files as version 3 when you can.
 
 ## Encrypting with your own key (AES-CBC)
 
@@ -568,10 +575,26 @@ raw ECB block operations. Use `aescrypt` for everyday encryption.
   `unsafe` code is the AES-NI backend (fixed 16-octet blocks) and the
   volatile writes in `zeroize`. Raw bytes for keys, IVs and passwords are
   length-checked once, when they become typed values.
-- **Hostile files.** Header parsing is bounded by `Limits` before anything is
-  allocated, and malformed input returns an error rather than panicking. The
-  test suite feeds thousands of random and mutated streams to every parser and
-  decryptor to check this.
+- **No panics on input.** Library code is built with `unwrap`, `expect`,
+  `panic!`, `unreachable!`, unchecked indexing and unchecked arithmetic
+  denied by lints. The only exceptions are fixed-size cryptographic kernels
+  (for example, `u8` indexes into 256-entry tables), and each carries a
+  written justification. Header parsing is bounded by `Limits` before
+  anything is allocated.
+- **Tested adversarially.** Five `cargo-fuzz` targets check properties, not
+  just crashes:
+  - accepted streams must be authentic;
+  - in-memory and streaming decryption must agree;
+  - encryption must round-trip;
+  - any change to a version 3 stream must be rejected.
+
+  Property tests (`proptest`) cover the same invariants, and Miri checks the
+  test suite for undefined behavior. The AES-NI code needs a capability token
+  that only runtime detection can create.
+- **Legacy format weakness.** In AES Crypt versions 0–2 the final block size
+  is unauthenticated (see
+  [Supported format versions](#supported-format-versions)); version 3 fixes
+  this.
 - **Timing.** With AES-NI (nearly all x86 CPUs since 2010), AES runs in
   constant time. Other CPUs use a table-based implementation whose timing
   can leak key information to an attacker who can measure it precisely, such
@@ -599,6 +622,7 @@ Each release adds one feature set; see the [changelog](CHANGELOG.md).
 | 0.6           | Hardening: hardware AES (AES-NI) backend and wiping secrets from memory                           |
 | 1.0.0-beta.1  | Security toolkit: raw-byte passwords, IVs and keys; stream inspection and verification            |
 | 1.0.0-beta.2  | Type safety: validated key/IV/iteration types, `Secret<T>`, typestate toolkit, resource limits     |
+| 1.0.0-rc.1    | Assurance: no-panic lints, fuzzing, property tests, Miri, AES-NI capability token                 |
 
 ## Development
 
@@ -619,7 +643,17 @@ Tests cover:
   version (see [`tests/data/aescrypt`](tests/data/aescrypt)). They come from
   an independent Python implementation, and the official AES Crypt tool
   decrypts every one of them;
-- thousands of random and mutated streams that must never cause a panic.
+- thousands of random and mutated streams that must never cause a panic;
+- property tests (`tests/properties.rs`).
+
+Fuzzing (needs nightly and `cargo install cargo-fuzz`) and Miri:
+
+```sh
+cd fuzz && cargo +nightly fuzz run decrypt -- -max_total_time=60
+# targets: decrypt, raw_decrypt, inspect, roundtrip, cbc
+
+MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test --lib
+```
 
 To test with the minimum supported Rust version, first pick dependency
 versions that support it:

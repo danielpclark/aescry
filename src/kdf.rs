@@ -15,6 +15,10 @@
 //! # Ok::<(), aescry::Error>(())
 //! ```
 
+// PBKDF2 output chunks are at most the digest size, so slicing the digest
+// to a chunk's length is always in bounds.
+#![allow(clippy::indexing_slicing)]
+
 use crate::digest::Digest;
 use crate::hmac::Hmac;
 use crate::sha256::Sha256;

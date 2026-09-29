@@ -5,6 +5,10 @@
 //! indexed by secret data, so this backend is not constant-time.
 
 #![allow(clippy::needless_range_loop)]
+// Kernel code: tables are indexed by `u8` values into 256-entry arrays, and
+// round-key offsets are bounded by the round count of a validated key size,
+// so no index depends on unchecked input.
+#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use super::KeyRef;
 use crate::algorithms::{get_u32, put_u32};

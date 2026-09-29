@@ -4,6 +4,47 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0-rc.1] - Unreleased
+
+Assurance: checks that back the 1.0 API. No breaking changes.
+
+### Added
+- No-panic lints: library code denies `unwrap`, `expect`, `panic!`,
+  `unreachable!`, `todo!`, `unimplemented!`, unchecked indexing and
+  unchecked arithmetic. Fixed-size cryptographic kernels allow indexing and
+  arithmetic locally, each with a written justification.
+- `unsafe_op_in_unsafe_fn` and `clippy::undocumented_unsafe_blocks` are
+  denied. The AES-NI backend needs a zero-sized capability token that only
+  runtime detection creates, so its safety precondition is enforced by
+  types.
+- Five `cargo-fuzz` targets (`fuzz/`): `decrypt`, `raw_decrypt`, `inspect`,
+  `roundtrip` and `cbc`. Each checks properties such as "verified success
+  implies authentic", "in-memory and streaming decryption agree",
+  "round-trips" and "version 3 rejects any bit flip".
+- Property tests with `proptest` (dev-dependency).
+- CI jobs for Miri (unit tests, software backend) and for fuzzing each
+  target.
+- `security::Verification::final_block` and
+  `Verification::is_consistent()`. They report whether a version 0–2
+  stream's unauthenticated final block size agrees with its padding.
+
+### Security
+- The fuzzer showed that AES Crypt versions 0–2 do not authenticate the
+  final block size. An attacker who can modify a legacy file can drop up to
+  15 octets from the end of the plaintext (or expose padding octets) without
+  failing either HMAC. This is a property of the format, and other AES Crypt
+  readers behave the same way. Such files are still accepted for
+  compatibility. `Verification::final_block` detects truncation for files
+  padded PKCS#7-style (aescry and pyAesCrypt pad this way). Version 3 is not
+  affected.
+
+### Changed
+- Decryption rejects a `Read` implementation that reports reading more
+  octets than the buffer holds, with an I/O error instead of a panic.
+- Buffer arithmetic in the AES Crypt engine, header parser, padding, CBC and
+  toolkit uses checked or saturating operations and `get()`.
+- Tests too slow for Miri are skipped under Miri.
+
 ## [1.0.0-beta.2] - Unreleased
 
 Type safety for 1.0: raw bytes are validated once into distinct types, and
@@ -233,6 +274,7 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[1.0.0-rc.1]: https://github.com/danielpclark/aescry/compare/v1.0.0-beta.2...v1.0.0-rc.1
 [1.0.0-beta.2]: https://github.com/danielpclark/aescry/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/danielpclark/aescry/compare/v0.6.0...v1.0.0-beta.1
 [0.6.0]: https://github.com/danielpclark/aescry/compare/v0.5.0...v0.6.0

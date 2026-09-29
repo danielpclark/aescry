@@ -299,7 +299,7 @@ impl<S: ValueSource> RawEncryptor<S> {
 
     /// Encrypt `plaintext` and return the stream.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut out = Vec::with_capacity(plaintext.len() + 256);
+        let mut out = Vec::with_capacity(plaintext.len().saturating_add(256));
         self.stream(plaintext, &mut out)?;
         Ok(out)
     }
@@ -329,12 +329,30 @@ pub struct Verification {
     /// Whether the message HMAC matched.  For version 0 this also depends on
     /// the password.
     pub message: bool,
+    /// Versions 0–2 only (`None` for version 3): whether the final block
+    /// size field agrees with the padding in the decrypted final block.
+    ///
+    /// That field is **not covered by any HMAC** in versions 0–2, so an
+    /// attacker can change it to drop up to 15 octets from the end of the
+    /// plaintext, or to append the padding octets, without failing
+    /// authentication.  Writers (including this crate and pyAesCrypt) pad the
+    /// final block PKCS#7-style, so truncation shows up here as `Some(false)`.
+    /// Setting the size to 0 ("full block"), which appends the padding
+    /// octets, cannot be told apart from a genuine full block.  Version 3
+    /// authenticates its padding and has neither problem.
+    pub final_block: Option<bool>,
 }
 
 impl Verification {
     /// Whether every HMAC that was checked matched.
     pub fn is_authentic(&self) -> bool {
         self.message && self.key_block != Some(false)
+    }
+
+    /// Whether every HMAC matched and, for versions 0–2, the unauthenticated
+    /// final block size is consistent with the final block.
+    pub fn is_consistent(&self) -> bool {
+        self.is_authentic() && self.final_block != Some(false)
     }
 }
 
@@ -357,7 +375,11 @@ impl From<DecryptInfo> for DecryptReport {
             derived_key: info.derived_key,
             session_iv: info.session_iv,
             session_key: info.session_key,
-            verification: Verification { key_block: info.key_hmac_ok, message: info.message_hmac_ok },
+            verification: Verification {
+                key_block: info.key_hmac_ok,
+                message: info.message_hmac_ok,
+                final_block: info.final_block_ok,
+            },
         }
     }
 }
@@ -619,7 +641,7 @@ impl<V: VerifyMode> RawDecryptor<V> {
 pub fn verify(key: &DecryptKey, data: &[u8]) -> Result<Verification, Error> {
     let options = DecryptOptions { limits: Limits::DEFAULT, verify: false };
     let info = aescrypt::decrypt_engine(key.as_engine_key(), &options, data, io::sink())?;
-    Ok(Verification { key_block: info.key_hmac_ok, message: info.message_hmac_ok })
+    Ok(Verification { key_block: info.key_hmac_ok, message: info.message_hmac_ok, final_block: info.final_block_ok })
 }
 
 /// The layout of an AES Crypt stream, from [`inspect`].
@@ -661,7 +683,7 @@ impl Layout {
         let size = (self.final_block_size? & 0x0f) as usize;
         let len = self.ciphertext.len();
         Some(match len.checked_sub(BLOCK_SIZE) {
-            Some(full_blocks) if size != 0 => full_blocks + size,
+            Some(full_blocks) if size != 0 => full_blocks.saturating_add(size),
             _ => len,
         })
     }
@@ -700,10 +722,10 @@ pub fn inspect_with_limits(data: &[u8], limits: Limits) -> Result<Layout, Error>
     // extension positions: after magic, version and reserved octet
     let mut extensions = Vec::new();
     if version >= Version::V2 {
-        let mut pos = 5;
+        let mut pos: usize = 5;
         for ext in header.extensions() {
-            let start = pos + 2;
-            let end = start + ext.as_bytes().len();
+            let start = pos.saturating_add(2);
+            let end = start.saturating_add(ext.as_bytes().len());
             extensions.push((start..end, ext.clone()));
             pos = end;
         }
@@ -711,7 +733,7 @@ pub fn inspect_with_limits(data: &[u8], limits: Limits) -> Result<Layout, Error>
 
     let mut pos = header.len();
     let mut take = |n: usize| -> Range<usize> {
-        let range = pos..pos + n;
+        let range = pos..pos.saturating_add(n);
         pos = range.end;
         range
     };
@@ -748,7 +770,7 @@ pub fn inspect_with_limits(data: &[u8], limits: Limits) -> Result<Layout, Error>
     };
 
     // at least `trailer` (>= 32) octets follow the ciphertext
-    let hmac = data.len() - 32..data.len();
+    let hmac = data.len().saturating_sub(32)..data.len();
     let hmac_bytes = field(data, &hmac)?;
 
     Ok(Layout {

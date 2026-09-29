@@ -37,11 +37,12 @@ impl Extension {
         if identifier.contains('\0') {
             return Err(Error::InvalidExtension(ExtensionError::NulInIdentifier));
         }
-        if identifier.len() + 1 + value.len() > MAX_EXTENSION_LEN {
+        let len = identifier.len().saturating_add(1).saturating_add(value.len());
+        if len > MAX_EXTENSION_LEN {
             return Err(Error::InvalidExtension(ExtensionError::InvalidLength));
         }
 
-        let mut raw = Vec::with_capacity(identifier.len() + 1 + value.len());
+        let mut raw = Vec::with_capacity(len);
         raw.extend_from_slice(identifier.as_bytes());
         raw.push(0);
         raw.extend_from_slice(value);
@@ -74,13 +75,17 @@ impl Extension {
         Extension { raw }
     }
 
-    fn split(&self) -> usize {
-        self.raw.iter().position(|&b| b == 0).unwrap_or(self.raw.len())
+    /// The identifier (up to the first NUL) and the value (after it).
+    fn parts(&self) -> (&[u8], &[u8]) {
+        let mut parts = self.raw.splitn(2, |&b| b == 0);
+        let identifier = parts.next().unwrap_or_default();
+        let value = parts.next().unwrap_or_default();
+        (identifier, value)
     }
 
     /// The identifier octets, up to the first NUL octet.
     pub fn identifier(&self) -> &[u8] {
-        &self.raw[..self.split()]
+        self.parts().0
     }
 
     /// The identifier as text, if it is valid UTF-8.
@@ -90,13 +95,12 @@ impl Extension {
 
     /// The contents after the identifier's NUL terminator.
     pub fn value(&self) -> &[u8] {
-        let split = self.split();
-        self.raw.get(split + 1..).unwrap_or(&[])
+        self.parts().1
     }
 
     /// Whether this is a container extension (empty identifier).
     pub fn is_container(&self) -> bool {
-        self.split() == 0
+        self.parts().0.is_empty()
     }
 
     /// The extension exactly as encoded in the stream (without the length).
@@ -196,10 +200,10 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool, limits
     }
 
     let version = Version::from_u8(start[3]).ok_or(Error::UnsupportedVersion(start[3]))?;
-    let mut len = 5;
+    let mut len: usize = 5;
 
     // the fixed fields after the extensions: iterations (v3) and the IV
-    let tail_len = if version >= Version::V3 { 4 + 16 } else { 16 };
+    let tail_len: usize = if version >= Version::V3 { 20 } else { 16 };
     let header_too_long = Error::LimitExceeded(Limit::HeaderLength { max: limits.max_header_len });
 
     let mut extensions = Vec::new();
@@ -208,25 +212,25 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool, limits
         loop {
             let mut ext_len = [0u8; 2];
             reader.read_exact(&mut ext_len).map_err(|e| truncated(e, StreamError::TruncatedExtensions))?;
-            len += 2;
+            len = len.saturating_add(2);
 
             let ext_len = u16::from_be_bytes(ext_len) as usize;
             if ext_len == 0 {
                 break;
             }
 
-            count += 1;
+            count = count.saturating_add(1);
             if count > limits.max_extensions {
                 return Err(Error::LimitExceeded(Limit::Extensions { max: limits.max_extensions }));
             }
             // this extension, the terminator and the fixed fields must fit
-            if len + ext_len + 2 + tail_len > limits.max_header_len {
+            if len.saturating_add(ext_len).saturating_add(2).saturating_add(tail_len) > limits.max_header_len {
                 return Err(header_too_long);
             }
 
             let mut raw = vec![0u8; ext_len];
             reader.read_exact(&mut raw).map_err(|e| truncated(e, StreamError::TruncatedExtensions))?;
-            len += ext_len;
+            len = len.saturating_add(ext_len);
 
             if keep_extensions {
                 extensions.push(Extension::from_raw(raw));
@@ -234,7 +238,7 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool, limits
         }
     }
 
-    if len + tail_len > limits.max_header_len {
+    if len.saturating_add(tail_len) > limits.max_header_len {
         return Err(header_too_long);
     }
 
@@ -243,12 +247,12 @@ pub(crate) fn read_header<R: Read>(reader: &mut R, keep_extensions: bool, limits
         let mut n = [0u8; 4];
         reader.read_exact(&mut n).map_err(|e| truncated(e, StreamError::TruncatedHeader))?;
         iterations = Some(u32::from_be_bytes(n));
-        len += 4;
+        len = len.saturating_add(4);
     }
 
     let mut iv = [0u8; 16];
     reader.read_exact(&mut iv).map_err(|e| truncated(e, StreamError::TruncatedHeader))?;
-    len += 16;
+    len = len.saturating_add(16);
 
     Ok(Header { version, reserved: start[4], extensions, iterations, iv, len })
 }

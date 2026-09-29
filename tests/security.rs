@@ -455,3 +455,57 @@ fn hostile_input_never_panics() {
         let _ = decryptor.skip_verification().decrypt(&data);
     }
 }
+
+/// Found by the `roundtrip` fuzz target: in versions 0-2 the final block
+/// size is not authenticated.  Changing it cannot be detected by the HMACs,
+/// but the final block's padding exposes it, and version 3 is immune.
+#[test]
+fn legacy_final_block_size_is_unauthenticated_but_checked() {
+    let plaintext = [0x41u8; 20]; // final block holds 4 octets
+    let key = || DecryptKey::password("pw").unwrap();
+
+    for v in [Version::V0, Version::V1, Version::V2] {
+        let stream = RawEncryptor::new(EncryptKey::password("pw").unwrap()).version(v).encrypt(&plaintext).unwrap();
+        let size_at = if v == Version::V0 { 4 } else { stream.len() - 33 };
+        assert_eq!(stream[size_at], 4);
+
+        let honest = RawDecryptor::new(key()).decrypt(&stream).unwrap();
+        assert_eq!(honest.report().verification().final_block, Some(true));
+        assert!(honest.report().verification().is_consistent());
+
+        // truncation: 4 -> 1 still passes both HMACs...
+        let mut truncated = stream.clone();
+        truncated[size_at] = 1;
+        let opened = RawDecryptor::new(key()).decrypt(&truncated).unwrap();
+        assert_eq!(opened.plaintext(), &plaintext[..17]);
+        assert!(opened.report().verification().is_authentic());
+        // ...but the padding shows the change
+        assert_eq!(opened.report().verification().final_block, Some(false));
+        assert!(!opened.report().verification().is_consistent());
+        assert!(!verify(&key(), &truncated).unwrap().is_consistent());
+
+        // unused high bits: same plaintext, flagged
+        let mut high = stream.clone();
+        high[size_at] |= 0x20;
+        let opened = RawDecryptor::new(key()).decrypt(&high).unwrap();
+        assert_eq!(opened.plaintext(), &plaintext[..]);
+        assert_eq!(opened.report().verification().final_block, Some(false));
+    }
+
+    // version 3 pads inside the authenticated ciphertext
+    let v3 = RawEncryptor::new(EncryptKey::password("pw").unwrap()).iterations(iterations(1)).encrypt(&plaintext).unwrap();
+    let opened = RawDecryptor::new(key()).decrypt(&v3).unwrap();
+    assert_eq!(opened.report().verification().final_block, None);
+    assert!(opened.report().verification().is_consistent());
+}
+
+/// The legacy fixtures (independent writer) pad consistently.
+#[test]
+fn legacy_fixtures_have_consistent_final_blocks() {
+    for v in 0..3 {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/data/aescrypt/fox.v{}.aes", v));
+        let data = std::fs::read(path).unwrap();
+        let check = verify(&DecryptKey::password("aescry test ✓").unwrap(), &data).unwrap();
+        assert!(check.is_consistent(), "fox.v{}", v);
+    }
+}

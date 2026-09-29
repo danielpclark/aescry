@@ -11,6 +11,10 @@
 //! assert!(mac.verify(&tag).is_ok());
 //! ```
 
+// Digest is sealed and its sizes are checked at compile time below, so the
+// key block slices are always in bounds.
+#![allow(clippy::indexing_slicing)]
+
 use crate::digest::Digest;
 use crate::sha256::Sha256;
 use crate::sha512::Sha512;

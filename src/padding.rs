@@ -17,12 +17,12 @@ use crate::Error;
 
 /// The number of padding octets PKCS#7 adds to a message of `len` octets.
 pub fn pkcs7_padding_len(len: usize) -> usize {
-    BLOCK_SIZE - len % BLOCK_SIZE
+    BLOCK_SIZE.saturating_sub(len % BLOCK_SIZE)
 }
 
 /// Return a copy of `data` with PKCS#7 padding appended.
 pub fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(data.len() + BLOCK_SIZE);
+    let mut buf = Vec::with_capacity(data.len().saturating_add(BLOCK_SIZE));
     buf.extend_from_slice(data);
     pkcs7_pad_in_place(&mut buf);
     buf
@@ -31,7 +31,7 @@ pub fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
 /// Append PKCS#7 padding to `buf`.
 pub fn pkcs7_pad_in_place(buf: &mut Vec<u8>) {
     let n = pkcs7_padding_len(buf.len());
-    buf.resize(buf.len() + n, n as u8);
+    buf.resize(buf.len().saturating_add(n), n as u8);
 }
 
 /// Check and strip PKCS#7 padding, returning the message.
@@ -41,7 +41,7 @@ pub fn pkcs7_pad_in_place(buf: &mut Vec<u8>) {
 /// single error for every kind of bad padding.
 pub fn pkcs7_unpad(data: &[u8]) -> Result<&[u8], Error> {
     let len = pkcs7_unpadded_len(data)?;
-    Ok(&data[..len])
+    data.get(..len).ok_or(Error::InvalidPadding)
 }
 
 /// Check and strip PKCS#7 padding from `buf` in place.
@@ -56,8 +56,8 @@ fn pkcs7_unpadded_len(data: &[u8]) -> Result<usize, Error> {
         return Err(Error::InvalidPadding);
     }
 
-    let last = &data[data.len() - BLOCK_SIZE..];
-    let n = last[BLOCK_SIZE - 1];
+    let last = data.rchunks_exact(BLOCK_SIZE).next().ok_or(Error::InvalidPadding)?;
+    let n = *last.last().ok_or(Error::InvalidPadding)?;
 
     // bad is non-zero if n is 0 or greater than 16 (the operands are small,
     // so bit 31 of a wrapped subtraction is set exactly when a < b)
@@ -65,7 +65,7 @@ fn pkcs7_unpadded_len(data: &[u8]) -> Result<usize, Error> {
 
     for (i, &b) in last.iter().enumerate() {
         // in_padding is all ones for the last n octets, 0 otherwise
-        let distance = (BLOCK_SIZE - i) as u32; // 16 down to 1
+        let distance = BLOCK_SIZE.saturating_sub(i) as u32; // 16 down to 1
         let outside = (n as u32).wrapping_sub(distance) >> 31; // 1 if n < distance
         let in_padding = outside.wrapping_sub(1);
         bad |= in_padding & (b ^ n) as u32;
@@ -75,7 +75,7 @@ fn pkcs7_unpadded_len(data: &[u8]) -> Result<usize, Error> {
         return Err(Error::InvalidPadding);
     }
 
-    Ok(data.len() - n as usize)
+    Ok(data.len().saturating_sub(n as usize))
 }
 
 #[cfg(test)]
