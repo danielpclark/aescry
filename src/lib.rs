@@ -1,4 +1,5 @@
 #![allow(unused_imports, dead_code, unused_variables, unused_assignments, unused_macros)]
+#![doc = include_str!("../README.md")]
 // ---------------------- Version 2 ------------------------
 //
 //   3 Octets - 'AES'
@@ -121,6 +122,16 @@ impl AesFile {
     pub fn new(v: u8, file: &str) -> Self {
         AesFile {version: v, file: file.to_string()}
     }
+
+    /// The AES Crypt file format version (0, 1 or 2) read from the header.
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// The path the file was detected at.
+    pub fn path(&self) -> &str {
+        &self.file
+    }
 }
 
 pub mod detect {
@@ -211,7 +222,8 @@ fn detect_get_file() {
     let truncated = write("short.aes", b"AES");
     let plain = write("plain.txt", b"hello");
 
-    assert_eq!(detect::get_file(&v2).map(|f| f.version), Some(2));
+    assert_eq!(detect::get_file(&v2).map(|f| f.version()), Some(2));
+    assert_eq!(detect::get_file(&v2).unwrap().path(), v2);
     assert!(detect::get_file(&bad_version).is_none());
     assert!(detect::get_file(&truncated).is_none());
     assert!(detect::get_file(&plain).is_none());
