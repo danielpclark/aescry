@@ -15,6 +15,10 @@ pub enum Error {
     /// Decrypted data did not end with valid PKCS#7 padding.  Without an
     /// integrity check this usually means the key or IV was wrong.
     InvalidPadding,
+    /// A MAC or other integrity check did not match.
+    AuthenticationFailed,
+    /// A key derivation iteration count was out of range.
+    InvalidIterations(u32),
     /// The operating system's random number generator failed.
     Random(io::Error),
     /// An I/O error occurred while reading or writing.
@@ -30,6 +34,8 @@ impl fmt::Display for Error {
                 write!(f, "invalid data length: {} octets is not a multiple of 16", n)
             }
             Error::InvalidPadding => f.write_str("invalid padding"),
+            Error::AuthenticationFailed => f.write_str("authentication failed"),
+            Error::InvalidIterations(n) => write!(f, "invalid iteration count: {}", n),
             Error::Random(e) => write!(f, "random number generator failed: {}", e),
             Error::Io(e) => write!(f, "I/O error: {}", e),
         }

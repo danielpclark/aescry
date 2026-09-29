@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - Unreleased
+
+Integrity and key derivation.
+
+### Added
+- `sha512` module: an incremental `Sha512` hasher and a one-shot `sha512()`.
+- `digest` module: a `Digest` trait over SHA-256 and SHA-512.
+- `hmac` module: generic `Hmac<H>`, `HmacSha256`/`HmacSha512` and one-shot
+  `hmac_sha256`/`hmac_sha512`. `verify` compares in constant time.
+  `verify_truncated` checks truncated tags and refuses tags under 80 bits.
+- `ct` module: constant-time slice comparison.
+- `kdf` module:
+  - `pbkdf2` (RFC 8018) over any `Digest`, with SHA-256/SHA-512 helpers.
+  - `aescrypt_legacy`, the 8192 × SHA-256 derivation of AES Crypt formats 0–2.
+  - `utf16le` password encoding.
+- `Error` variants: `AuthenticationFailed` and `InvalidIterations`.
+- Tests against RustCrypto's SHA-2 known-answer vectors, HMAC RFC 4231 and
+  Wycheproof vectors, and PBKDF2 vectors, plus the FIPS 180-2 examples. PBKDF2
+  and the AES Crypt derivation are cross-checked with Python's `hashlib`.
+
 ## [0.3.0] - Unreleased
 
 Encrypting raw byte buffers.
@@ -62,5 +82,6 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[0.4.0]: https://github.com/danielpclark/aescry/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danielpclark/aescry/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/danielpclark/aescry/releases/tag/v0.2.0

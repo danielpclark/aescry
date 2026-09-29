@@ -12,10 +12,15 @@ mod util;
 
 pub mod aes;
 pub mod cbc;
+pub mod ct;
 pub mod detect;
+pub mod digest;
+pub mod hmac;
+pub mod kdf;
 pub mod padding;
 pub mod random;
 pub mod sha256;
+pub mod sha512;
 
 pub use crate::detect::Version;
 pub use crate::error::Error;

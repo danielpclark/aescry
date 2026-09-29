@@ -11,14 +11,17 @@ random number generator.
 - **`aes`**: the AES-128, AES-192 and AES-256 block cipher (FIPS-197)
 - **`padding`**: PKCS#7 padding
 - **`random`**: secure random keys, IVs and bytes
-- **`sha256`**: SHA-256 (FIPS 180-2)
+- **`sha256`**, **`sha512`**: SHA-256 and SHA-512 (FIPS 180-2)
+- **`hmac`**: HMAC-SHA256 and HMAC-SHA512 with constant-time verification
+- **`kdf`**: PBKDF2 and the AES Crypt legacy key derivation
+- **`ct`**: constant-time comparison
 - **`detect`**: detection of AES Crypt files and streams (format versions 0–3)
 
 ## Installation
 
 ```toml
 [dependencies]
-aescry = "0.3"
+aescry = "0.4"
 ```
 
 `aescry` requires Rust 1.63 or newer.
@@ -81,7 +84,46 @@ assert_eq!(data, [0u8; 64]);
 
 > **Note:** CBC keeps data confidential but does not detect tampering. If an
 > attacker can change the ciphertext, authenticate it with a MAC before
-> decrypting.
+> decrypting. See [Authenticating ciphertext](#authenticating-ciphertext).
+
+### Authenticating ciphertext
+
+Encrypt-then-MAC with HMAC-SHA256 detects any change to the IV or ciphertext.
+Use separate keys for encryption and authentication, and check the tag
+before decrypting.
+
+```rust
+use aescry::hmac::{hmac_sha256, HmacSha256};
+use aescry::{cbc, random};
+
+let enc_key = random::bytes::<32>()?;
+let mac_key = random::bytes::<32>()?;
+
+// Sender: encrypt, then MAC the IV and ciphertext.
+let message = cbc::encrypt_with_random_iv(&enc_key, b"wire $100 to Bob")?;
+let tag = hmac_sha256(&mac_key, &message);
+
+// Receiver: verify (in constant time) before decrypting.
+let mut mac = HmacSha256::new(&mac_key);
+mac.update(&message);
+mac.verify(&tag)?;
+let plaintext = cbc::decrypt_with_iv_prefix(&enc_key, &message)?;
+# assert_eq!(plaintext, b"wire $100 to Bob");
+# Ok::<(), aescry::Error>(())
+```
+
+### Deriving keys from passwords
+
+```rust
+use aescry::kdf;
+
+let salt = aescry::random::bytes::<16>()?; // store the salt with the data
+let key: [u8; 32] = kdf::pbkdf2_hmac_sha512_array(b"correct horse", &salt, 600_000)?;
+# Ok::<(), aescry::Error>(())
+```
+
+`kdf::aescrypt_legacy` is the iterated SHA-256 derivation of AES Crypt formats
+0–2, and `kdf::utf16le` encodes a password the way those formats expect.
 
 ### AES block cipher
 
@@ -113,10 +155,11 @@ assert!(Aes::new(&key[..20]).is_err());
 > reveals which blocks are equal. The block cipher is a building block for
 > modes like CBC. It is not a way to encrypt messages on its own.
 
-### SHA-256
+### Hashing
 
 ```rust
 use aescry::sha256::{sha256, Sha256};
+use aescry::sha512::sha512;
 
 let digest = sha256(b"abc");
 
@@ -124,7 +167,11 @@ let mut hasher = Sha256::new();
 hasher.update(b"a");
 hasher.update(b"bc");
 assert_eq!(hasher.finalize(), digest);
+
+assert_eq!(sha512(b"abc").len(), 64);
 ```
+
+`aescry::ct::eq` compares secret values such as tags in constant time.
 
 ### Detecting AES Crypt files
 
@@ -169,7 +216,9 @@ let version = detect::from_reader(std::io::stdin())?;
   timing can leak information about the key to an attacker who can measure it
   precisely, for example another tenant on the same machine. A hardware-backed,
   constant-time backend is planned.
-- `Debug` output of cipher types never includes key material.
+- `Debug` output of cipher, hash and MAC types never includes key material.
+- `Hmac::verify` compares tags in constant time. `Hmac::verify_truncated`
+  refuses tags shorter than 80 bits.
 
 ## Roadmap
 
@@ -189,10 +238,14 @@ cargo test
 cargo test --release   # faster run of the AES Monte Carlo tests
 ```
 
-Tests cover the FIPS-197 examples, the Rijndael Monte Carlo tests, the
-NIST SP 800-38A CBC examples, and the NESSIE AES and NIST CAVP CBC vectors
-from the [RustCrypto](https://github.com/RustCrypto) project (see
-[`tests/data/rustcrypto`](tests/data/rustcrypto)).
+Tests cover:
+- the FIPS-197, FIPS 180-2 and NIST SP 800-38A examples;
+- the Rijndael Monte Carlo tests;
+- vectors from the [RustCrypto](https://github.com/RustCrypto) project (see
+  [`tests/data/rustcrypto`](tests/data/rustcrypto)): NESSIE AES, NIST CAVP
+  CBC, SHA-2 known answers, HMAC from RFC 4231 and Project Wycheproof, and
+  PBKDF2;
+- cross-checks against OpenSSL and Python's `hashlib`.
 
 To test with the minimum supported Rust version, first pick dependency
 versions that support it:
