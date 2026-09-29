@@ -6,12 +6,12 @@
 //! Output is compatible with the AES Crypt 4.x tools.
 //!
 //! ```
-//! use aescry::aescrypt::{self, Encryptor};
+//! use aescry::aescrypt::{self, Encryptor, Iterations};
 //!
 //! let data = b"any bytes at all \x00\xff";
 //!
 //! // Low iteration counts keep examples fast; use the default for real data.
-//! let encrypted = Encryptor::new("correct horse")?.iterations(1000).encrypt(data)?;
+//! let encrypted = Encryptor::new("correct horse")?.iterations(Iterations::new(1000)?).encrypt(data)?;
 //! let decrypted = aescrypt::decrypt("correct horse", &encrypted)?;
 //! assert_eq!(decrypted, data);
 //!
@@ -19,15 +19,30 @@
 //! # Ok::<(), aescry::Error>(())
 //! ```
 //!
+//! Versions 0–2 do not authenticate the final block size, so a modified
+//! legacy file can lose up to 15 octets from its end without failing the
+//! HMAC checks.  Version 3 authenticates its padding.  The
+//! [`security`](crate::security) toolkit can detect most such changes (see
+//! `Verification::final_block`).
+//!
+//! Reading a stream is bounded by [`Limits`]: at most
+//! [`MAX_ITERATIONS`] of PBKDF2, a 1 MiB header and 256 extensions, so a
+//! hostile stream cannot make a reader spend unbounded memory or time.
+//!
 //! [AES Crypt]: https://www.aescrypt.com/aes_stream_format.html
 
 mod engine;
 mod format;
+mod types;
 
 pub use self::format::{Extension, Header, DEFAULT_CONTAINER_LEN, MAX_EXTENSION_LEN};
+pub use self::types::{
+    DerivedKey, Iterations, Limits, Password, PublicIv, SessionIv, SessionKey, DEFAULT_ITERATIONS, MAX_ITERATIONS,
+    MIN_ITERATIONS,
+};
 
 pub(crate) use self::engine::{
-    decrypt as decrypt_engine, derive_key, encrypt as encrypt_engine, Credential, DecryptInfo, DecryptOptions,
+    decrypt as decrypt_engine, encrypt as encrypt_engine, DecryptInfo, DecryptKey, DecryptOptions, EncryptKey,
     EncryptParams,
 };
 
@@ -37,17 +52,6 @@ use crate::{random, Error};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-
-/// The PBKDF2 iteration count used by default, matching the AES Crypt 4.x
-/// command-line tool.
-pub const DEFAULT_ITERATIONS: u32 = 600_000;
-
-/// The smallest accepted PBKDF2 iteration count.
-pub const MIN_ITERATIONS: u32 = 1;
-
-/// The largest accepted PBKDF2 iteration count.  Larger values in a stream
-/// are refused, so a hostile file cannot make decryption take hours.
-pub const MAX_ITERATIONS: u32 = engine::MAX_ITERATIONS;
 
 /// Encrypt `plaintext` with `password` using the default settings.
 ///
@@ -63,17 +67,18 @@ pub fn encrypt(password: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
 ///
 /// Errors include [`Error::InvalidPassword`] for a wrong password,
 /// [`Error::AlteredMessage`] if the ciphertext was modified or truncated,
-/// [`Error::NotAesCrypt`], [`Error::UnsupportedVersion`] and
-/// [`Error::InvalidStream`].
+/// [`Error::NotAesCrypt`], [`Error::UnsupportedVersion`],
+/// [`Error::InvalidStream`] and [`Error::LimitExceeded`].
 pub fn decrypt(password: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
     Decryptor::new(password)?.decrypt(data)
 }
 
-/// Read only the unencrypted header of a stream.
+/// Read only the unencrypted header of a stream, within the default
+/// [`Limits`].
 ///
 /// ```
-/// # use aescry::aescrypt::{self, Encryptor};
-/// let encrypted = Encryptor::new("pw")?.iterations(1000).encrypt(b"hi")?;
+/// # use aescry::aescrypt::{self, Encryptor, Iterations};
+/// let encrypted = Encryptor::new("pw")?.iterations(Iterations::new(1000)?).encrypt(b"hi")?;
 /// let header = aescrypt::read_header(&encrypted[..])?;
 ///
 /// assert_eq!(header.version(), aescry::Version::V3);
@@ -81,56 +86,51 @@ pub fn decrypt(password: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
 /// assert!(header.extension("CREATED_BY").unwrap().starts_with(b"aescry"));
 /// # Ok::<(), aescry::Error>(())
 /// ```
-pub fn read_header<R: Read>(mut reader: R) -> Result<Header, Error> {
-    format::read_header(&mut reader, true)
+pub fn read_header<R: Read>(reader: R) -> Result<Header, Error> {
+    read_header_with_limits(reader, Limits::DEFAULT)
 }
 
-fn check_password(password: &str) -> Result<(), Error> {
-    if password.is_empty() {
-        Err(Error::EmptyPassword)
-    } else {
-        Ok(())
-    }
+/// Read only the unencrypted header of a stream, within `limits`.
+pub fn read_header_with_limits<R: Read>(mut reader: R, limits: Limits) -> Result<Header, Error> {
+    format::read_header(&mut reader, true, &limits)
 }
 
 /// Encrypts data into AES Crypt format version 3.
 ///
 /// By default the stream carries a `CREATED_BY` extension naming this crate
 /// and an empty 128-octet container extension, as AES Crypt recommends.
-#[derive(Clone)]
-pub struct Encryptor<'a> {
-    password: &'a str,
-    iterations: u32,
+pub struct Encryptor {
+    password: Password,
+    iterations: Iterations,
     extensions: Vec<Extension>,
     default_extensions: bool,
 }
 
-impl core::fmt::Debug for Encryptor<'_> {
+impl core::fmt::Debug for Encryptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Encryptor")
+            .field("password", &self.password)
             .field("iterations", &self.iterations)
             .field("extensions", &self.extensions)
             .field("default_extensions", &self.default_extensions)
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
-impl<'a> Encryptor<'a> {
-    /// Create an encryptor for a non-empty password.
-    pub fn new(password: &'a str) -> Result<Self, Error> {
-        check_password(password)?;
-
+impl Encryptor {
+    /// Create an encryptor for a non-empty text password.
+    pub fn new(password: &str) -> Result<Self, Error> {
         Ok(Encryptor {
-            password,
-            iterations: DEFAULT_ITERATIONS,
+            password: Password::new(password)?,
+            iterations: Iterations::DEFAULT,
             extensions: Vec::new(),
             default_extensions: true,
         })
     }
 
-    /// Set the PBKDF2 iteration count ([`MIN_ITERATIONS`] to
-    /// [`MAX_ITERATIONS`]).  Higher is slower for attackers and for you.
-    pub fn iterations(mut self, iterations: u32) -> Self {
+    /// Set the PBKDF2 iteration count.  Higher is slower for attackers and
+    /// for you.
+    pub fn iterations(mut self, iterations: Iterations) -> Self {
         self.iterations = iterations;
         self
     }
@@ -149,7 +149,7 @@ impl<'a> Encryptor<'a> {
     }
 
     fn all_extensions(&self) -> Result<Vec<Extension>, Error> {
-        let mut extensions = Vec::with_capacity(self.extensions.len() + 2);
+        let mut extensions = Vec::with_capacity(self.extensions.len().saturating_add(2));
 
         if self.default_extensions {
             extensions.push(Extension::new("CREATED_BY", concat!("aescry ", env!("CARGO_PKG_VERSION")))?);
@@ -163,19 +163,16 @@ impl<'a> Encryptor<'a> {
     }
 
     fn stream<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<u64, Error> {
-        if !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&self.iterations) {
-            return Err(Error::InvalidIterations(self.iterations));
-        }
-
         let extensions = self.all_extensions()?;
+        let session_key = SessionKey::generate()?;
         let params = EncryptParams {
             version: Version::V3,
-            credential: Credential::Text(self.password),
+            key: EncryptKey::Password(&self.password),
             iterations: self.iterations,
             extensions: &extensions,
-            public_iv: random::bytes()?,
-            session_iv: random::bytes()?,
-            session_key: random::bytes()?,
+            public_iv: PublicIv::generate()?,
+            session_iv: SessionIv::generate()?,
+            session_key: &session_key,
         };
 
         encrypt_engine(&params, reader, writer)
@@ -183,7 +180,7 @@ impl<'a> Encryptor<'a> {
 
     /// Encrypt `plaintext` and return the AES Crypt stream.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut out = Vec::with_capacity(plaintext.len() + 400);
+        let mut out = Vec::with_capacity(plaintext.len().saturating_add(400));
         self.stream(plaintext, &mut out)?;
         Ok(out)
     }
@@ -205,35 +202,34 @@ impl<'a> Encryptor<'a> {
 }
 
 /// Decrypts AES Crypt streams of versions 0–3.
-#[derive(Clone)]
-pub struct Decryptor<'a> {
-    password: &'a str,
-    max_iterations: u32,
+pub struct Decryptor {
+    password: Password,
+    limits: Limits,
 }
 
-impl core::fmt::Debug for Decryptor<'_> {
+impl core::fmt::Debug for Decryptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Decryptor").field("max_iterations", &self.max_iterations).finish_non_exhaustive()
+        f.debug_struct("Decryptor").field("password", &self.password).field("limits", &self.limits).finish()
     }
 }
 
-impl<'a> Decryptor<'a> {
-    /// Create a decryptor for a non-empty password.
-    pub fn new(password: &'a str) -> Result<Self, Error> {
-        check_password(password)?;
-        Ok(Decryptor { password, max_iterations: MAX_ITERATIONS })
+impl Decryptor {
+    /// Create a decryptor for a non-empty text password.
+    pub fn new(password: &str) -> Result<Self, Error> {
+        Ok(Decryptor { password: Password::new(password)?, limits: Limits::DEFAULT })
     }
 
-    /// Refuse version 3 streams that ask for more than `max` PBKDF2
-    /// iterations (at most [`MAX_ITERATIONS`]).
-    pub fn max_iterations(mut self, max: u32) -> Self {
-        self.max_iterations = max.min(MAX_ITERATIONS);
+    /// Use stricter resource limits.  Each limit can only be lowered from
+    /// [`Limits::DEFAULT`]; the [`security`](crate::security) toolkit can
+    /// raise them.
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits.at_most_default();
         self
     }
 
     fn stream<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<DecryptInfo, Error> {
-        let options = DecryptOptions { max_iterations: self.max_iterations, verify: true };
-        decrypt_engine(Credential::Text(self.password), &options, reader, writer)
+        let options = DecryptOptions::verified(self.limits);
+        decrypt_engine(DecryptKey::Password(&self.password), &options, reader, writer)
     }
 
     /// Decrypt a stream held in memory.  Both HMACs are verified before

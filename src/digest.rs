@@ -1,12 +1,19 @@
 //! A common interface to the hash functions in this crate.
 //!
 //! [`Hmac`](crate::hmac::Hmac) and [`pbkdf2`](crate::kdf::pbkdf2) are generic
-//! over this trait.
+//! over this trait.  It is sealed: only this crate's hashes implement it, so
+//! code generic over `Digest` can rely on their sizes.
 
 use crate::{sha256::Sha256, sha512::Sha512};
 
+mod private {
+    pub trait Sealed {}
+    impl Sealed for crate::sha256::Sha256 {}
+    impl Sealed for crate::sha512::Sha512 {}
+}
+
 /// An incremental cryptographic hash function.
-pub trait Digest: Clone {
+pub trait Digest: Clone + private::Sealed {
     /// Digest size in octets.
     const OUTPUT_SIZE: usize;
     /// Internal block size in octets.

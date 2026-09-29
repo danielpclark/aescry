@@ -47,3 +47,36 @@ jobs:
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+  miri:
+    name: Miri (undefined behavior checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      # AES-NI is not emulated by Miri, so this exercises the software
+      # backend, the zeroizing writes and all safe code paths.
+      - run: cargo miri test --lib
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decrypt, raw_decrypt, inspect, roundtrip, cbc]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
+        working-directory: fuzz
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts

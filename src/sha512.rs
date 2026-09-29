@@ -9,6 +9,10 @@
 //! assert_eq!(hasher.finalize(), sha512(b"abc"));
 //! ```
 
+// Kernel code: 128-octet blocks and an 80-word schedule indexed by fixed
+// loop bounds; buffer offsets are below the block size by construction.
+#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
 /// SHA-512 digest size in octets.
 pub const OUTPUT_SIZE: usize = 64;
 
@@ -190,8 +194,10 @@ fn process(state: &mut [u64; 8], data: &[u8]) {
     assert!(data.len() == BLOCK_SIZE, "invalid data length");
     let mut w = [0u64; 80];
 
-    for (t, chunk) in data.chunks_exact(8).enumerate() {
-        w[t] = u64::from_be_bytes(chunk.try_into().expect("8-octet chunk"));
+    for (word, chunk) in w.iter_mut().zip(data.chunks_exact(8)) {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(chunk);
+        *word = u64::from_be_bytes(bytes);
     }
 
     for t in 16..80 {
@@ -236,6 +242,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn padding_boundaries() {
         // 111 octets fit padding + length in one block; 112 and 128 need two
         let cases: [(usize, &str); 5] = [
@@ -252,6 +259,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn chunked_message() {
         let msg: Vec<u8> = (0..5000u32).map(|i| (i * 7) as u8).collect();
         let one_shot = sha512(&msg);

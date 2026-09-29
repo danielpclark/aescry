@@ -74,7 +74,7 @@ impl Zeroize for String {
         let mut bytes = core::mem::take(self).into_bytes();
         bytes.zeroize();
         // reuse the wiped allocation; it holds no characters now
-        *self = String::from_utf8(bytes).expect("empty vector is valid UTF-8");
+        *self = String::from_utf8(bytes).unwrap_or_default();
     }
 }
 

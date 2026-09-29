@@ -1,0 +1,50 @@
+[package]
+name = "aescry-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+aescry = { path = ".." }
+
+# Not part of the main crate's workspace.
+[workspace]
+
+[[bin]]
+name = "decrypt"
+path = "fuzz_targets/decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raw_decrypt"
+path = "fuzz_targets/raw_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inspect"
+path = "fuzz_targets/inspect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cbc"
+path = "fuzz_targets/cbc.rs"
+test = false
+doc = false
+bench = false

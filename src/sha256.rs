@@ -9,6 +9,10 @@
 //! assert_eq!(hasher.finalize(), sha256(b"abc"));
 //! ```
 
+// Kernel code: 64-octet blocks and a 64-word schedule indexed by fixed
+// loop bounds; buffer offsets are below the block size by construction.
+#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+
 use crate::algorithms::*;
 
 /// SHA-256 digest size in octets.
@@ -284,6 +288,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn long_message() {
         let msg = "a".repeat(1000000);
         assert_eq!(hex(msg.as_bytes()), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
@@ -305,6 +310,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn chunked_message() {
         let msg = "a".repeat(1000000);
 

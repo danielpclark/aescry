@@ -96,7 +96,8 @@ impl<C: BlockCipher> CbcEncryptor<C> {
         check_block_multiple(buf.len())?;
 
         for chunk in buf.chunks_exact_mut(BLOCK_SIZE) {
-            let mut block: Block = (&*chunk).try_into().expect("16-octet chunk");
+            let mut block: Block = [0u8; BLOCK_SIZE];
+            block.copy_from_slice(chunk);
             self.encrypt_block(&mut block);
             chunk.copy_from_slice(&block);
         }
@@ -151,7 +152,8 @@ impl<C: BlockCipher> CbcDecryptor<C> {
         check_block_multiple(buf.len())?;
 
         for chunk in buf.chunks_exact_mut(BLOCK_SIZE) {
-            let mut block: Block = (&*chunk).try_into().expect("16-octet chunk");
+            let mut block: Block = [0u8; BLOCK_SIZE];
+            block.copy_from_slice(chunk);
             self.decrypt_block(&mut block);
             chunk.copy_from_slice(&block);
         }
@@ -177,7 +179,7 @@ impl<C: BlockCipher> CbcDecryptor<C> {
 pub fn encrypt(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     let mut encryptor = CbcEncryptor::new(Aes::new(key)?, &to_iv(iv)?);
 
-    let mut buf = Vec::with_capacity(plaintext.len() + BLOCK_SIZE);
+    let mut buf = Vec::with_capacity(plaintext.len().saturating_add(BLOCK_SIZE));
     buf.extend_from_slice(plaintext);
     pkcs7_pad_in_place(&mut buf);
 
@@ -228,7 +230,7 @@ pub fn encrypt_with_random_iv(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, E
     let iv = random::iv()?;
     let ciphertext = encrypt(key, &iv, plaintext)?;
 
-    let mut out = Vec::with_capacity(BLOCK_SIZE + ciphertext.len());
+    let mut out = Vec::with_capacity(ciphertext.len().saturating_add(BLOCK_SIZE));
     out.extend_from_slice(&iv);
     out.extend_from_slice(&ciphertext);
     Ok(out)
