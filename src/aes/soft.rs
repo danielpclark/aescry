@@ -8,6 +8,7 @@
 
 use crate::algorithms::{get_u32, put_u32};
 use crate::fixed_tables::{FORWARD_SBOX, REVERSE_SBOX};
+use crate::zeroize::Zeroize;
 
 // forward S-box & tables
 
@@ -102,39 +103,8 @@ pub(crate) struct KeySchedule {
 impl KeySchedule {
     /// Expand a 16, 24 or 32 octet key.  The caller guarantees the length.
     pub(crate) fn new(key: &[u8]) -> Self {
-        Self::with_sub_word(key, sub_word)
-    }
-
-    /// Expand a key using the given SubWord implementation.
-    pub(crate) fn with_sub_word(key: &[u8], sub_word: impl Fn(u32) -> u32) -> Self {
-        let nk = key.len() / 4;
-        let nr = match key.len() {
-            16 => 10,
-            24 => 12,
-            32 => 14,
-            _ => unreachable!("invalid AES key length"),
-        };
-
-        let mut ks = KeySchedule { erk: [0u32; 64], drk: [0u32; 64], nr };
-        let rk = &mut ks.erk;
-
-        for i in 0..nk {
-            rk[i] = get_u32(key, i * 4);
-        }
-
-        // setup encryption round keys (FIPS-197 section 5.2)
-
-        for i in nk..(nr + 1) * 4 {
-            let mut temp = rk[i - 1];
-
-            if i % nk == 0 {
-                temp = sub_word(temp.rotate_left(8)) ^ RCON[i / nk - 1];
-            } else if nk > 6 && i % nk == 4 {
-                temp = sub_word(temp);
-            }
-
-            rk[i] = rk[i - nk] ^ temp;
-        }
+        let (erk, nr) = expand_encryption_key(key, sub_word);
+        let mut ks = KeySchedule { erk, drk: [0u32; 64], nr };
 
         // setup decryption round keys
         //
@@ -164,6 +134,46 @@ impl KeySchedule {
 
         ks
     }
+}
+
+impl Drop for KeySchedule {
+    fn drop(&mut self) {
+        Zeroize::zeroize(&mut self.erk[..]);
+        Zeroize::zeroize(&mut self.drk[..]);
+    }
+}
+
+/// Expand a 16, 24 or 32 octet key into encryption round key words
+/// (FIPS-197 section 5.2) using the given SubWord, and return them with the
+/// number of rounds.
+pub(crate) fn expand_encryption_key(key: &[u8], sub_word: impl Fn(u32) -> u32) -> ([u32; 64], usize) {
+    let nk = key.len() / 4;
+    let nr = match key.len() {
+        16 => 10,
+        24 => 12,
+        32 => 14,
+        _ => unreachable!("invalid AES key length"),
+    };
+
+    let mut rk = [0u32; 64];
+
+    for i in 0..nk {
+        rk[i] = get_u32(key, i * 4);
+    }
+
+    for i in nk..(nr + 1) * 4 {
+        let mut temp = rk[i - 1];
+
+        if i % nk == 0 {
+            temp = sub_word(temp.rotate_left(8)) ^ RCON[i / nk - 1];
+        } else if nk > 6 && i % nk == 4 {
+            temp = sub_word(temp);
+        }
+
+        rk[i] = rk[i - nk] ^ temp;
+    }
+
+    (rk, nr)
 }
 
 // AES 128-bit block encryption routine

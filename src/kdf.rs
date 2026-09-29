@@ -19,6 +19,7 @@ use crate::digest::Digest;
 use crate::hmac::Hmac;
 use crate::sha256::Sha256;
 use crate::sha512::Sha512;
+use crate::zeroize::Zeroize;
 use crate::Error;
 
 /// PBKDF2 (RFC 8018, section 5.2) with HMAC over the hash `H`.
@@ -59,6 +60,9 @@ pub fn pbkdf2<H: Digest>(
         }
 
         chunk.copy_from_slice(&t.as_ref()[..chunk.len()]);
+
+        u.as_mut().zeroize();
+        t.as_mut().zeroize();
     }
 
     Ok(())
@@ -104,13 +108,18 @@ pub fn aescrypt_legacy(password: &[u8], iv: &[u8; 16]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(&digest);
         hasher.update(password);
-        digest = hasher.finalize();
+        let next = hasher.finalize();
+        digest.zeroize();
+        digest = next;
     }
 
     digest
 }
 
 /// Encode a password as UTF-16LE octets, as AES Crypt versions 0–2 expect.
+///
+/// The result holds the password; wipe it with
+/// [`Zeroize`] when done.
 pub fn utf16le(password: &str) -> Vec<u8> {
     password.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }

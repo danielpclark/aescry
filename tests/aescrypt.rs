@@ -74,7 +74,8 @@ fn header_contents() {
     assert_eq!(header.version(), Version::V3);
     assert_eq!(header.iterations(), Some(1000));
     assert_eq!(header.reserved(), 0);
-    assert_eq!(header.extension("CREATED_BY"), Some(&b"aescry 0.5.0"[..]));
+    let created_by = format!("aescry {}", env!("CARGO_PKG_VERSION"));
+    assert_eq!(header.extension("CREATED_BY"), Some(created_by.as_bytes()));
     assert_eq!(header.extension("urn:example:note"), Some(&b"hello"[..]));
 
     let exts = header.extensions();

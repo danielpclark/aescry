@@ -32,6 +32,7 @@ pub(crate) use self::engine::{
 };
 
 use crate::detect::Version;
+use crate::zeroize::Zeroizing;
 use crate::{random, Error};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -238,9 +239,10 @@ impl<'a> Decryptor<'a> {
     /// Decrypt a stream held in memory.  Both HMACs are verified before
     /// any plaintext is returned.
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut out = Vec::with_capacity(data.len());
-        self.stream(data, &mut out)?;
-        Ok(out)
+        // wiped if decryption fails; large enough to never reallocate
+        let mut out = Zeroizing::new(Vec::with_capacity(data.len()));
+        self.stream(data, &mut *out)?;
+        Ok(out.take())
     }
 
     /// Decrypt a stream from `reader`, writing plaintext to `writer`, and

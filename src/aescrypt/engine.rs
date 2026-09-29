@@ -7,6 +7,7 @@ use crate::cbc::{CbcDecryptor, CbcEncryptor};
 use crate::detect::Version;
 use crate::hmac::HmacSha256;
 use crate::padding::pkcs7_unpad;
+use crate::zeroize::{Zeroize, Zeroizing};
 use crate::{ct, kdf, Error};
 use std::io::{self, Read, Write};
 
@@ -34,13 +35,14 @@ pub(crate) enum Credential<'a> {
 
 impl Credential<'_> {
     /// The password octets for `version`, or `None` for key credentials.
-    fn password_bytes(&self, version: Version) -> Option<Vec<u8>> {
-        match *self {
-            Credential::Text(text) if version >= Version::V3 => Some(text.as_bytes().to_vec()),
-            Credential::Text(text) => Some(kdf::utf16le(text)),
-            Credential::Raw(raw) => Some(raw.to_vec()),
-            _ => None,
-        }
+    fn password_bytes(&self, version: Version) -> Option<Zeroizing<Vec<u8>>> {
+        let bytes = match *self {
+            Credential::Text(text) if version >= Version::V3 => text.as_bytes().to_vec(),
+            Credential::Text(text) => kdf::utf16le(text),
+            Credential::Raw(raw) => raw.to_vec(),
+            _ => return None,
+        };
+        Some(Zeroizing::new(bytes))
     }
 }
 
@@ -63,6 +65,12 @@ pub(crate) struct EncryptParams<'a> {
     pub(crate) public_iv: [u8; 16],
     pub(crate) session_iv: [u8; 16],
     pub(crate) session_key: [u8; 32],
+}
+
+impl Drop for EncryptParams<'_> {
+    fn drop(&mut self) {
+        self.session_key.zeroize();
+    }
 }
 
 /// Encrypt everything `reader` produces, writing an AES Crypt stream.
@@ -94,7 +102,7 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
     let mut header = Vec::new();
     write_header(&mut header, version, 0, params.extensions, params.iterations, &params.public_iv)?;
 
-    let derived = match params.credential {
+    let derived = Zeroizing::new(match params.credential {
         Credential::DerivedKey(key) => *key,
         Credential::Session { .. } => {
             return Err(Error::InvalidStream("a session key cannot be used to write a stream"))
@@ -103,11 +111,11 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
             let password = credential.password_bytes(version).expect("password credential");
             derive_key(version, &password, &params.public_iv, params.iterations)?
         }
-    };
+    });
 
     // versions 1+ encrypt a session IV and key with the derived key
     let (bulk_key, bulk_iv) = if version == Version::V0 {
-        (derived, params.public_iv)
+        (derived.clone(), params.public_iv)
     } else {
         let mut block = [0u8; 48];
         block[..16].copy_from_slice(&params.session_iv);
@@ -115,7 +123,7 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
 
         CbcEncryptor::new(Aes256::new(&derived), &params.public_iv).encrypt_in_place(&mut block)?;
 
-        let mut mac = HmacSha256::new(&derived);
+        let mut mac = HmacSha256::new(&*derived);
         mac.update(&block);
         if version >= Version::V3 {
             mac.update(&[version.as_u8()]);
@@ -124,14 +132,14 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
         header.extend_from_slice(&block);
         header.extend_from_slice(&mac.finalize());
 
-        (params.session_key, params.session_iv)
+        (Zeroizing::new(params.session_key), params.session_iv)
     };
 
     writer.write_all(&header)?;
 
     let mut encryptor = CbcEncryptor::new(Aes256::new(&bulk_key), &bulk_iv);
-    let mut mac = HmacSha256::new(&bulk_key);
-    let mut buf = vec![0u8; CHUNK_SIZE];
+    let mut mac = HmacSha256::new(&*bulk_key);
+    let mut buf = Zeroizing::new(vec![0u8; CHUNK_SIZE]);
     let mut filled = 0;
     let mut total = 0u64;
 
@@ -210,9 +218,9 @@ impl Default for DecryptOptions {
 pub(crate) struct DecryptInfo {
     pub(crate) header: Header,
     pub(crate) plaintext_len: u64,
-    pub(crate) derived_key: Option<[u8; 32]>,
+    pub(crate) derived_key: Option<Zeroizing<[u8; 32]>>,
     pub(crate) session_iv: [u8; 16],
-    pub(crate) session_key: [u8; 32],
+    pub(crate) session_key: Zeroizing<[u8; 32]>,
     /// Whether the key block HMAC matched (None if it was not checked).
     pub(crate) key_hmac_ok: Option<bool>,
     /// Whether the ciphertext HMAC matched (None if it was not checked).
@@ -240,32 +248,32 @@ pub(crate) fn decrypt<R: Read, W: Write>(
     }
 
     let derived_key = match credential {
-        Credential::DerivedKey(key) => Some(*key),
+        Credential::DerivedKey(key) => Some(Zeroizing::new(*key)),
         Credential::Session { .. } => None,
         credential => {
             let password = credential.password_bytes(version).expect("password credential");
-            Some(derive_key(version, &password, &header.iv, header.iterations.unwrap_or(0))?)
+            Some(Zeroizing::new(derive_key(version, &password, &header.iv, header.iterations.unwrap_or(0))?))
         }
     };
 
     let mut key_hmac_ok = None;
 
     let (bulk_key, bulk_iv) = if version == Version::V0 {
-        match (credential, derived_key) {
-            (Credential::Session { iv, key }, _) => (*key, *iv),
-            (_, Some(derived)) => (derived, header.iv),
+        match (credential, &derived_key) {
+            (Credential::Session { iv, key }, _) => (Zeroizing::new(*key), *iv),
+            (_, Some(derived)) => (derived.clone(), header.iv),
             _ => unreachable!(),
         }
     } else {
-        let mut block = [0u8; 80];
-        reader.read_exact(&mut block).map_err(|e| truncated(e, "truncated key block"))?;
+        let mut block = Zeroizing::new([0u8; 80]);
+        reader.read_exact(&mut *block).map_err(|e| truncated(e, "truncated key block"))?;
         let (encrypted, tag) = block.split_at_mut(48);
 
-        match (credential, derived_key) {
-            (Credential::Session { iv, key }, _) => (*key, *iv),
+        match (credential, &derived_key) {
+            (Credential::Session { iv, key }, _) => (Zeroizing::new(*key), *iv),
             (_, Some(derived)) => {
                 if options.verify {
-                    let mut mac = HmacSha256::new(&derived);
+                    let mut mac = HmacSha256::new(&**derived);
                     mac.update(encrypted);
                     if version >= Version::V3 {
                         mac.update(&[version.as_u8()]);
@@ -278,13 +286,12 @@ pub(crate) fn decrypt<R: Read, W: Write>(
                     }
                 }
 
-                CbcDecryptor::new(Aes256::new(&derived), &header.iv).decrypt_in_place(encrypted)?;
+                CbcDecryptor::new(Aes256::new(derived), &header.iv).decrypt_in_place(encrypted)?;
 
                 let mut iv = [0u8; 16];
-                let mut key = [0u8; 32];
+                let mut key = Zeroizing::new([0u8; 32]);
                 iv.copy_from_slice(&encrypted[..16]);
                 key.copy_from_slice(&encrypted[16..]);
-                encrypted.fill(0);
                 (key, iv)
             }
             _ => unreachable!(),
@@ -299,9 +306,10 @@ pub(crate) fn decrypt<R: Read, W: Write>(
     };
 
     let mut decryptor = CbcDecryptor::new(Aes256::new(&bulk_key), &bulk_iv);
-    let mut mac = HmacSha256::new(&bulk_key);
-    let mut buf: Vec<u8> = Vec::with_capacity(CHUNK_SIZE + trailer_len + 32);
-    let mut chunk = vec![0u8; CHUNK_SIZE];
+    let mut mac = HmacSha256::new(&*bulk_key);
+    // sized so it never reallocates (which would leave unwiped copies)
+    let mut buf = Zeroizing::new(Vec::with_capacity(CHUNK_SIZE + trailer_len + 32));
+    let mut chunk = Zeroizing::new(vec![0u8; CHUNK_SIZE]);
     let mut written = 0u64;
 
     loop {
@@ -492,7 +500,7 @@ mod tests {
 
             if version != Version::V0 {
                 assert_eq!(info.session_iv, [2; 16]);
-                assert_eq!(info.session_key, [3; 32]);
+                assert_eq!(*info.session_key, [3; 32]);
             }
         }
     }

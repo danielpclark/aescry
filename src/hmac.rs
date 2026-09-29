@@ -68,7 +68,7 @@ impl<H: Digest> Hmac<H> {
         let mut outer = H::new();
         outer.update(block);
 
-        block.fill(0);
+        crate::zeroize::Zeroize::zeroize(block);
 
         Hmac { inner, outer }
     }
@@ -80,9 +80,10 @@ impl<H: Digest> Hmac<H> {
 
     /// Finish and return the tag.
     pub fn finalize(self) -> H::Output {
-        let inner = self.inner.finalize();
+        let mut inner = self.inner.finalize();
         let mut outer = self.outer;
         outer.update(inner.as_ref());
+        crate::zeroize::Zeroize::zeroize(inner.as_mut());
         outer.finalize()
     }
 

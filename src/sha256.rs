@@ -43,6 +43,15 @@ pub struct Sha256 {
     buffer: [u8; BLOCK_SIZE],
 }
 
+impl Drop for Sha256 {
+    // the state and buffer are derived from the (possibly secret) input
+    fn drop(&mut self) {
+        crate::zeroize::Zeroize::zeroize(&mut self.state);
+        crate::zeroize::Zeroize::zeroize(&mut self.buffer);
+        self.total = 0;
+    }
+}
+
 impl Default for Sha256 {
     fn default() -> Self {
         Self::new()

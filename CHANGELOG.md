@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - Unreleased
+
+Hardening.
+
+### Added
+- AES-NI backend for x86 and x86-64, selected automatically at runtime when
+  the CPU supports it. It runs in constant time. Its key schedule computes
+  SubWord with `AESENCLAST`, so no table lookups depend on the key.
+- `aes::Backend` (`detect`, `is_available`, `is_constant_time`), plus
+  `with_backend` and `backend` on every AES type to pick or report the
+  implementation.
+- `zeroize` module: a `Zeroize` trait using volatile writes, and a
+  `Zeroizing<T>` wrapper that wipes its contents on drop.
+- `Error::BackendUnavailable`.
+
+### Changed
+- Wiped when dropped or no longer needed: key schedules (both backends),
+  SHA-256/SHA-512 states, HMAC and PBKDF2 intermediate values, CBC buffers
+  after failed decryptions, and AES Crypt passwords, derived keys, session
+  keys and streaming buffers. AES Crypt decryption into memory wipes partial
+  output on failure.
+- `unsafe` code is denied crate-wide except in the AES-NI backend and the
+  volatile writes in `zeroize`.
+
 ## [0.5.0] - Unreleased
 
 The AES Crypt file format.
@@ -115,6 +139,7 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[0.6.0]: https://github.com/danielpclark/aescry/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danielpclark/aescry/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danielpclark/aescry/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danielpclark/aescry/compare/v0.2.0...v0.3.0

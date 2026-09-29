@@ -18,13 +18,14 @@ random number generator.
 - **`hmac`**: HMAC-SHA256 and HMAC-SHA512 with constant-time verification
 - **`kdf`**: PBKDF2 and the AES Crypt legacy key derivation
 - **`ct`**: constant-time comparison
+- **`zeroize`**: wiping secrets from memory
 - **`detect`**: detection of AES Crypt files and streams (format versions 0–3)
 
 ## Installation
 
 ```toml
 [dependencies]
-aescry = "0.5"
+aescry = "0.6"
 ```
 
 `aescry` requires Rust 1.63 or newer.
@@ -207,6 +208,9 @@ assert_eq!(&block, b"exactly 16 bytes");
 let cipher = Aes::new(&key[..16])?;
 assert_eq!(cipher.key_size(), 16);
 assert!(Aes::new(&key[..20]).is_err());
+
+// Which implementation is running: AES-NI (constant-time) or software.
+println!("{:?}", cipher.backend());
 # Ok::<(), aescry::Error>(())
 ```
 
@@ -262,13 +266,20 @@ let version = detect::from_reader(std::io::stdin())?;
 
 ## Security
 
+- On x86 and x86-64 CPUs with AES-NI (nearly all since 2010), AES uses the
+  hardware instructions. They run in constant time and are much faster. The
+  key schedule is also computed without secret-dependent table lookups.
+  `aes::Backend::detect()` reports which backend is in use.
+- Other CPUs use the portable table-based implementation. Its timing depends
+  on the key and data, which can leak them to an attacker who can measure it
+  precisely, such as another tenant on the same machine.
+  `Backend::is_constant_time()` tells you which case applies.
+- Key schedules, hash and MAC states, derived keys, session keys and AES Crypt
+  buffers are wiped from memory when dropped. `zeroize::Zeroizing` does the
+  same for your own values.
 - `cbc::decrypt` reports bad padding as an error. If callers can observe that
   error for ciphertexts they choose, they can decrypt data (a padding oracle
   attack). Verify a MAC before decrypting.
-- The AES implementation uses lookup tables indexed by secret data. Its
-  timing can leak information about the key to an attacker who can measure it
-  precisely, for example another tenant on the same machine. A hardware-backed,
-  constant-time backend is planned.
 - `Debug` output of cipher, hash and MAC types never includes key material.
 - AES Crypt header extensions are neither encrypted nor authenticated. Don't
   trust their contents.

@@ -36,6 +36,8 @@ pub enum Error {
     InvalidExtension(&'static str),
     /// A path has no file name.
     InvalidPath,
+    /// The requested AES backend is not supported by this CPU.
+    BackendUnavailable,
     /// The operating system's random number generator failed.
     Random(io::Error),
     /// An I/O error occurred while reading or writing.
@@ -61,6 +63,7 @@ impl fmt::Display for Error {
             Error::InvalidStream(why) => write!(f, "invalid AES Crypt stream: {}", why),
             Error::InvalidExtension(why) => write!(f, "invalid extension: {}", why),
             Error::InvalidPath => f.write_str("the path has no file name"),
+            Error::BackendUnavailable => f.write_str("the AES backend is not supported by this CPU"),
             Error::Random(e) => write!(f, "random number generator failed: {}", e),
             Error::Io(e) => write!(f, "I/O error: {}", e),
         }

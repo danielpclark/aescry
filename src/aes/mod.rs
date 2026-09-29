@@ -17,10 +17,105 @@
 //! assert_eq!(&block, b"sixteen byte msg");
 //! ```
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod ni;
 mod soft;
 
 use crate::Error;
 use core::fmt;
+
+/// An AES implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Backend {
+    /// Portable table-based implementation.  Its timing depends on the key
+    /// and data, so it can leak them to an attacker who can measure it.
+    Software,
+    /// The x86 AES-NI instructions: constant-time and much faster.
+    AesNi,
+}
+
+impl Backend {
+    /// The best backend this CPU supports; [`Backend::AesNi`] where available.
+    pub fn detect() -> Backend {
+        if Backend::AesNi.is_available() {
+            Backend::AesNi
+        } else {
+            Backend::Software
+        }
+    }
+
+    /// Whether this backend can be used on this CPU.
+    pub fn is_available(self) -> bool {
+        match self {
+            Backend::Software => true,
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Backend::AesNi => ni::available(),
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+            Backend::AesNi => false,
+        }
+    }
+
+    /// Whether this backend runs in constant time.
+    pub fn is_constant_time(self) -> bool {
+        matches!(self, Backend::AesNi)
+    }
+}
+
+/// Round keys for whichever backend is in use.
+#[derive(Clone)]
+enum Inner {
+    Soft(soft::KeySchedule),
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Ni(ni::KeySchedule),
+}
+
+impl Inner {
+    /// Expand a 16, 24 or 32 octet key.  The caller guarantees the length.
+    fn new(key: &[u8], backend: Backend) -> Result<Self, Error> {
+        match backend {
+            Backend::Software => Ok(Inner::Soft(soft::KeySchedule::new(key))),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Backend::AesNi => ni::KeySchedule::new(key).map(Inner::Ni).ok_or(Error::BackendUnavailable),
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+            Backend::AesNi => Err(Error::BackendUnavailable),
+        }
+    }
+
+    fn backend(&self) -> Backend {
+        match self {
+            Inner::Soft(_) => Backend::Software,
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Inner::Ni(_) => Backend::AesNi,
+        }
+    }
+
+    fn rounds(&self) -> usize {
+        match self {
+            Inner::Soft(ks) => ks.nr,
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Inner::Ni(ks) => ks.rounds(),
+        }
+    }
+
+    #[inline]
+    fn encrypt(&self, block: &mut Block) {
+        match self {
+            Inner::Soft(ks) => soft::encrypt(ks, block),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Inner::Ni(ks) => ks.encrypt(block),
+        }
+    }
+
+    #[inline]
+    fn decrypt(&self, block: &mut Block) {
+        match self {
+            Inner::Soft(ks) => soft::decrypt(ks, block),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Inner::Ni(ks) => ks.decrypt(block),
+        }
+    }
+}
 
 /// The AES block size in octets.
 pub const BLOCK_SIZE: usize = 16;
@@ -54,9 +149,12 @@ pub trait BlockCipher {
 macro_rules! fixed_key_aes {
     ($name:ident, $bits:expr, $len:expr) => {
         #[doc = concat!("AES with a ", stringify!($bits), "-bit key.")]
+        ///
+        /// The fastest available backend is chosen automatically; see
+        /// [`Backend`].  Round keys are wiped when the cipher is dropped.
         #[derive(Clone)]
         pub struct $name {
-            ks: soft::KeySchedule,
+            inner: Inner,
         }
 
         impl $name {
@@ -65,26 +163,35 @@ macro_rules! fixed_key_aes {
 
             /// Expand the key into encryption and decryption round keys.
             pub fn new(key: &[u8; $len]) -> Self {
-                $name { ks: soft::KeySchedule::new(key) }
+                $name { inner: Inner::new(key, Backend::detect()).expect("detected backend is available") }
             }
 
             /// Create a cipher from a key slice, which must be exactly
             #[doc = concat!(stringify!($len), " octets long.")]
             pub fn from_slice(key: &[u8]) -> Result<Self, Error> {
-                if key.len() != $len {
-                    return Err(Error::InvalidKeyLength(key.len()));
-                }
-                Ok($name { ks: soft::KeySchedule::new(key) })
+                let key: &[u8; $len] = key.try_into().map_err(|_| Error::InvalidKeyLength(key.len()))?;
+                Ok(Self::new(key))
+            }
+
+            /// Create a cipher that uses a specific backend.  Returns
+            /// [`Error::BackendUnavailable`] if this CPU does not support it.
+            pub fn with_backend(key: &[u8; $len], backend: Backend) -> Result<Self, Error> {
+                Ok($name { inner: Inner::new(key, backend)? })
+            }
+
+            /// The backend in use.
+            pub fn backend(&self) -> Backend {
+                self.inner.backend()
             }
         }
 
         impl BlockCipher for $name {
             fn encrypt_block(&self, block: &mut Block) {
-                soft::encrypt(&self.ks, block);
+                self.inner.encrypt(block);
             }
 
             fn decrypt_block(&self, block: &mut Block) {
-                soft::decrypt(&self.ks, block);
+                self.inner.decrypt(block);
             }
         }
 
@@ -113,21 +220,27 @@ fixed_key_aes!(Aes256, 256, 32);
 /// ```
 #[derive(Clone)]
 pub struct Aes {
-    ks: soft::KeySchedule,
+    inner: Inner,
 }
 
 impl Aes {
     /// Create a cipher from a 16, 24 or 32 octet key.
     pub fn new(key: &[u8]) -> Result<Self, Error> {
+        Self::with_backend(key, Backend::detect())
+    }
+
+    /// Create a cipher that uses a specific backend.  Returns
+    /// [`Error::BackendUnavailable`] if this CPU does not support it.
+    pub fn with_backend(key: &[u8], backend: Backend) -> Result<Self, Error> {
         match key.len() {
-            16 | 24 | 32 => Ok(Aes { ks: soft::KeySchedule::new(key) }),
+            16 | 24 | 32 => Ok(Aes { inner: Inner::new(key, backend)? }),
             n => Err(Error::InvalidKeyLength(n)),
         }
     }
 
     /// The key size in octets.
     pub fn key_size(&self) -> usize {
-        match self.ks.nr {
+        match self.rounds() {
             10 => 16,
             12 => 24,
             _ => 32,
@@ -136,17 +249,22 @@ impl Aes {
 
     /// The number of rounds (10, 12 or 14).
     pub fn rounds(&self) -> usize {
-        self.ks.nr
+        self.inner.rounds()
+    }
+
+    /// The backend in use.
+    pub fn backend(&self) -> Backend {
+        self.inner.backend()
     }
 }
 
 impl BlockCipher for Aes {
     fn encrypt_block(&self, block: &mut Block) {
-        soft::encrypt(&self.ks, block);
+        self.inner.encrypt(block);
     }
 
     fn decrypt_block(&self, block: &mut Block) {
-        soft::decrypt(&self.ks, block);
+        self.inner.decrypt(block);
     }
 }
 

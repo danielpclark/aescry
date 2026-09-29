@@ -40,6 +40,7 @@
 
 use crate::aes::{Aes, Block, BlockCipher, BLOCK_SIZE};
 use crate::padding::{pkcs7_pad_in_place, pkcs7_unpad_in_place};
+use crate::zeroize::Zeroize;
 use crate::{random, Error};
 
 #[inline]
@@ -197,7 +198,10 @@ pub fn decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Erro
 
     let mut buf = ciphertext.to_vec();
     decryptor.decrypt_in_place(&mut buf)?;
-    pkcs7_unpad_in_place(&mut buf)?;
+    if let Err(e) = pkcs7_unpad_in_place(&mut buf) {
+        buf.zeroize();
+        return Err(e);
+    }
     Ok(buf)
 }
 

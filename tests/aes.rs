@@ -1,6 +1,6 @@
 mod common;
 
-use aescry::aes::{Aes, Aes128, Aes192, Aes256, Block, BlockCipher};
+use aescry::aes::{Aes, Aes128, Aes192, Aes256, Backend, Block, BlockCipher};
 use aescry::Error;
 use common::{array, hex, load_vectors};
 
@@ -22,22 +22,79 @@ fn check_vectors<C: BlockCipher>(file: &str, key_len: usize, new: impl Fn(&[u8])
     }
 }
 
+/// The backends this CPU supports.
+fn backends() -> Vec<Backend> {
+    [Backend::Software, Backend::AesNi].into_iter().filter(|b| b.is_available()).collect()
+}
+
 #[test]
 fn rustcrypto_aes128() {
     check_vectors("rustcrypto/aes128.txt", 16, |k| Aes128::new(&array(k)));
-    check_vectors("rustcrypto/aes128.txt", 16, |k| Aes::new(k).unwrap());
+    for backend in backends() {
+        check_vectors("rustcrypto/aes128.txt", 16, |k| Aes128::with_backend(&array(k), backend).unwrap());
+        check_vectors("rustcrypto/aes128.txt", 16, |k| Aes::with_backend(k, backend).unwrap());
+    }
 }
 
 #[test]
 fn rustcrypto_aes192() {
     check_vectors("rustcrypto/aes192.txt", 24, |k| Aes192::new(&array(k)));
-    check_vectors("rustcrypto/aes192.txt", 24, |k| Aes::new(k).unwrap());
+    for backend in backends() {
+        check_vectors("rustcrypto/aes192.txt", 24, |k| Aes192::with_backend(&array(k), backend).unwrap());
+        check_vectors("rustcrypto/aes192.txt", 24, |k| Aes::with_backend(k, backend).unwrap());
+    }
 }
 
 #[test]
 fn rustcrypto_aes256() {
     check_vectors("rustcrypto/aes256.txt", 32, |k| Aes256::new(&array(k)));
-    check_vectors("rustcrypto/aes256.txt", 32, |k| Aes::new(k).unwrap());
+    for backend in backends() {
+        check_vectors("rustcrypto/aes256.txt", 32, |k| Aes256::with_backend(&array(k), backend).unwrap());
+        check_vectors("rustcrypto/aes256.txt", 32, |k| Aes::with_backend(k, backend).unwrap());
+    }
+}
+
+#[test]
+fn backend_selection() {
+    let best = Backend::detect();
+    assert!(best.is_available());
+    assert_eq!(Aes::new(&[0; 16]).unwrap().backend(), best);
+    assert_eq!(Aes256::new(&[0; 32]).backend(), best);
+
+    let soft = Aes::with_backend(&[0; 16], Backend::Software).unwrap();
+    assert_eq!(soft.backend(), Backend::Software);
+    assert!(!Backend::Software.is_constant_time());
+    assert!(Backend::AesNi.is_constant_time());
+
+    if !Backend::AesNi.is_available() {
+        assert!(matches!(Aes::with_backend(&[0; 16], Backend::AesNi), Err(Error::BackendUnavailable)));
+    }
+}
+
+/// Random keys and blocks give the same results on every backend.
+#[test]
+fn backends_agree() {
+    let backends = backends();
+
+    for key_len in [16, 24, 32] {
+        for _ in 0..200 {
+            let key = aescry::random::key(key_len).unwrap();
+            let block: Block = aescry::random::bytes().unwrap();
+
+            let results: Vec<(Block, Block)> = backends
+                .iter()
+                .map(|&b| {
+                    let cipher = Aes::with_backend(&key, b).unwrap();
+                    let (mut enc, mut dec) = (block, block);
+                    cipher.encrypt_block(&mut enc);
+                    cipher.decrypt_block(&mut dec);
+                    (enc, dec)
+                })
+                .collect();
+
+            assert!(results.windows(2).all(|w| w[0] == w[1]), "backends disagree");
+        }
+    }
 }
 
 const FIPS197_PLAINTEXT: Block = [
@@ -129,13 +186,19 @@ const MONTE_CARLO_DECRYPT: [Block; 3] = [
 ];
 
 fn monte_carlo(expected: &[Block; 3], decrypt: bool) {
+    for backend in backends() {
+        monte_carlo_with(expected, decrypt, backend);
+    }
+}
+
+fn monte_carlo_with(expected: &[Block; 3], decrypt: bool, backend: Backend) {
     for n in 0..3 {
         let key_len = 16 + n * 8;
         let mut buf = [0u8; 16];
         let mut key = [0u8; 32];
 
         for _ in 0..400 {
-            let cipher = Aes::new(&key[..key_len]).unwrap();
+            let cipher = Aes::with_backend(&key[..key_len], backend).unwrap();
             let run = |buf: &mut Block| {
                 if decrypt { cipher.decrypt_block(buf) } else { cipher.encrypt_block(buf) }
             };
@@ -157,7 +220,7 @@ fn monte_carlo(expected: &[Block; 3], decrypt: bool) {
             }
         }
 
-        assert_eq!(buf, expected[n], "key size = {} bits", key_len * 8);
+        assert_eq!(buf, expected[n], "{:?}, key size = {} bits", backend, key_len * 8);
     }
 }
 

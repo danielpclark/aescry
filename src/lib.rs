@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
 #[macro_use]
@@ -22,6 +22,7 @@ pub mod padding;
 pub mod random;
 pub mod sha256;
 pub mod sha512;
+pub mod zeroize;
 
 pub use crate::detect::Version;
 pub use crate::error::Error;
