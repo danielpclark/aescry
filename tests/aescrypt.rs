@@ -261,3 +261,22 @@ fn files() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn require_constant_time() {
+    let ct = aescry::aes::Backend::constant_time();
+    let enc = fast("pw").require_constant_time().encrypt(b"x");
+    let dec = Decryptor::new("pw").unwrap().require_constant_time();
+
+    match ct {
+        Ok(backend) => {
+            assert!(backend.is_constant_time());
+            assert_eq!(dec.decrypt(&enc.unwrap()).unwrap(), b"x");
+        }
+        Err(_) => {
+            assert!(matches!(enc, Err(Error::BackendUnavailable)));
+            let stream = fast("pw").encrypt(b"x").unwrap();
+            assert!(matches!(dec.decrypt(&stream), Err(Error::BackendUnavailable)));
+        }
+    }
+}

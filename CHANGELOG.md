@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - Unreleased
+
+The first stable release. The public API, including the `security`
+toolkit, now follows semantic versioning (see "Stability" in the README).
+
+### Added
+- `aes::Backend::constant_time()` returns the constant-time backend, or
+  `Error::BackendUnavailable` on CPUs without one.
+- `require_constant_time()` on `aescrypt::Encryptor`, `aescrypt::Decryptor`,
+  `security::RawEncryptor` and `security::RawDecryptor`. With it, they refuse
+  to run instead of falling back to the table-based software AES.
+- CI runs `cargo-semver-checks` on pull requests against the base branch.
+- README sections on stability and the MSRV policy.
+
+### Changed
+- `security::EncryptKey` and `security::DecryptKey` are `#[non_exhaustive]`,
+  so key sources can be added in minor releases. Code that matches them
+  needs a wildcard arm. This is the last breaking change before the 1.0
+  promise.
+
 ## [1.0.0-rc.1] - Unreleased
 
 Assurance: checks that back the 1.0 API. No breaking changes.
@@ -274,6 +294,7 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[1.0.0]: https://github.com/danielpclark/aescry/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/danielpclark/aescry/compare/v1.0.0-beta.2...v1.0.0-rc.1
 [1.0.0-beta.2]: https://github.com/danielpclark/aescry/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/danielpclark/aescry/compare/v0.6.0...v1.0.0-beta.1

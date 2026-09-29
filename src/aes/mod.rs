@@ -61,6 +61,30 @@ impl Backend {
     pub fn is_constant_time(self) -> bool {
         matches!(self, Backend::AesNi)
     }
+
+    /// A constant-time backend for this CPU, or
+    /// [`Error::BackendUnavailable`] if there is none.  Use it to refuse to
+    /// run rather than fall back to the table-based software backend:
+    ///
+    /// ```
+    /// use aescry::aes::{Aes, Backend};
+    ///
+    /// match Backend::constant_time() {
+    ///     Ok(backend) => {
+    ///         let cipher = Aes::with_backend(&[0u8; 32], backend)?;
+    ///         assert!(cipher.backend().is_constant_time());
+    ///     }
+    ///     Err(e) => eprintln!("no constant-time AES here: {}", e),
+    /// }
+    /// # Ok::<(), aescry::Error>(())
+    /// ```
+    pub fn constant_time() -> Result<Backend, Error> {
+        if Backend::AesNi.is_available() {
+            Ok(Backend::AesNi)
+        } else {
+            Err(Error::BackendUnavailable)
+        }
+    }
 }
 
 /// A borrowed key whose length is one of the three AES key sizes.

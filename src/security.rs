@@ -66,7 +66,10 @@ pub use crate::aescrypt::{
 };
 
 /// What can create a stream: a password or an already derived key.
+///
+/// Non-exhaustive: new key sources may be added in minor releases.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum EncryptKey {
     /// Derive the key from a password.
     Password(Password),
@@ -112,7 +115,10 @@ impl From<DerivedKey> for EncryptKey {
 
 /// What can open a stream: a password, a derived key, or the session IV
 /// and key.
+///
+/// Non-exhaustive: new key sources may be added in minor releases.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DecryptKey {
     /// Derive the key from a password.
     Password(Password),
@@ -228,6 +234,7 @@ pub struct RawEncryptor<S: ValueSource = Random> {
     iterations: Iterations,
     extensions: Vec<Extension>,
     source: S,
+    constant_time: bool,
 }
 
 impl RawEncryptor<Random> {
@@ -240,6 +247,7 @@ impl RawEncryptor<Random> {
             iterations: Iterations::DEFAULT,
             extensions: Vec::new(),
             source: Random,
+            constant_time: false,
         }
     }
 
@@ -258,6 +266,7 @@ impl RawEncryptor<Random> {
             iterations: self.iterations,
             extensions: self.extensions,
             source: Deterministic { public_iv, session_iv, session_key },
+            constant_time: self.constant_time,
         }
     }
 }
@@ -282,7 +291,17 @@ impl<S: ValueSource> RawEncryptor<S> {
         self
     }
 
+    /// Refuse to run unless AES can run in constant time on this CPU.  See
+    /// [`Backend::constant_time`](crate::aes::Backend::constant_time).
+    pub fn require_constant_time(mut self) -> Self {
+        self.constant_time = true;
+        self
+    }
+
     fn stream<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<u64, Error> {
+        if self.constant_time {
+            crate::aes::Backend::constant_time()?;
+        }
         let (public_iv, session_iv, session_key) = sealed::Values::values(&self.source)?;
         let params = EncryptParams {
             version: self.version,
@@ -535,19 +554,20 @@ impl VerifyMode for Unverified {}
 pub struct RawDecryptor<V: VerifyMode = Verified> {
     key: DecryptKey,
     limits: Limits,
+    constant_time: bool,
     mode: PhantomData<V>,
 }
 
 impl RawDecryptor<Verified> {
     /// Decrypt with `key`, verifying both HMACs, within [`Limits::DEFAULT`].
     pub fn new(key: DecryptKey) -> Self {
-        RawDecryptor { key, limits: Limits::DEFAULT, mode: PhantomData }
+        RawDecryptor { key, limits: Limits::DEFAULT, constant_time: false, mode: PhantomData }
     }
 
     /// Decrypt even if an HMAC does not match.  Results are wrapped in
     /// [`Unauthenticated`].
     pub fn skip_verification(self) -> RawDecryptor<Unverified> {
-        RawDecryptor { key: self.key, limits: self.limits, mode: PhantomData }
+        RawDecryptor { key: self.key, limits: self.limits, constant_time: self.constant_time, mode: PhantomData }
     }
 
     /// Decrypt a stream held in memory.
@@ -607,7 +627,17 @@ impl<V: VerifyMode> RawDecryptor<V> {
         self
     }
 
+    /// Refuse to run unless AES can run in constant time on this CPU.  See
+    /// [`Backend::constant_time`](crate::aes::Backend::constant_time).
+    pub fn require_constant_time(mut self) -> Self {
+        self.constant_time = true;
+        self
+    }
+
     fn run<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<DecryptReport, Error> {
+        if self.constant_time {
+            crate::aes::Backend::constant_time()?;
+        }
         let options = DecryptOptions { limits: self.limits, verify: <V as sealed::Verify>::VERIFY };
         Ok(aescrypt::decrypt_engine(self.key.as_engine_key(), &options, reader, writer)?.into())
     }

@@ -39,10 +39,11 @@ hardware instructions in constant time.
 
 ```toml
 [dependencies]
-aescry = "1.0.0-rc.1"
+aescry = "1.0"
 ```
 
-`aescry` requires Rust 1.63 or newer.
+`aescry` requires Rust 1.63 or newer. See [Stability](#stability) for what
+the 1.0 promise covers.
 
 ## Which API should I use?
 
@@ -425,6 +426,20 @@ let software = Aes::with_backend(&[0u8; 16], Backend::Software)?;
 # Ok::<(), aescry::Error>(())
 ```
 
+To refuse to run without constant-time AES rather than fall back to the
+software backend, use `Backend::constant_time()`, or
+`require_constant_time()` on the AES Crypt encryptors and decryptors:
+
+```rust,no_run
+use aescry::aes::{Aes, Backend};
+use aescry::aescrypt::Decryptor;
+
+let cipher = Aes::with_backend(&[0u8; 32], Backend::constant_time()?)?;
+let decryptor = Decryptor::new("pw")?.require_constant_time(); // errors without AES-NI
+# let _ = (cipher, decryptor);
+# Ok::<(), aescry::Error>(())
+```
+
 Encrypting blocks independently (ECB) reveals which blocks are equal; use the
 block cipher as a building block, not to encrypt messages.
 
@@ -598,8 +613,9 @@ raw ECB block operations. Use `aescrypt` for everyday encryption.
 - **Timing.** With AES-NI (nearly all x86 CPUs since 2010), AES runs in
   constant time. Other CPUs use a table-based implementation whose timing
   can leak key information to an attacker who can measure it precisely, such
-  as another tenant on the same machine; `Backend::is_constant_time()` says
-  which applies. MAC and padding checks are constant-time.
+  as another tenant on the same machine. `Backend::is_constant_time()` says
+  which applies, and `require_constant_time()` / `Backend::constant_time()`
+  refuse to fall back. MAC and padding checks are constant-time.
 - **Secrets** are wiped from memory when dropped and never appear in `Debug`
   output. Wiping cannot reach copies made by the operating system (swap) or
   earlier reallocations.
@@ -608,6 +624,27 @@ raw ECB block operations. Use `aescrypt` for everyday encryption.
   data (a padding oracle), so verify a MAC first.
 - **AES Crypt header extensions** are neither encrypted nor authenticated.
   Don't trust their contents.
+
+## Stability
+
+`aescry` follows [Semantic Versioning](https://semver.org/). From 1.0.0,
+breaking changes to the public API (including the `security` toolkit) only
+happen in a new major version:
+
+- Types marked `#[non_exhaustive]` (`Error` and its detail enums, `Version`,
+  `Backend`, `Limits`, `Verification`, `Layout`, `EncryptKey`, `DecryptKey`)
+  can gain variants or fields in minor releases, so match them with a
+  wildcard arm.
+- `digest::Digest` is sealed: only this crate implements it.
+- Streams written by one 1.x release can be read by every later 1.x release,
+  and version 3 output stays compatible with AES Crypt.
+- The minimum supported Rust version (1.63) is only raised in a minor
+  release, and the changelog says so.
+- Default resource limits and iteration counts may be tightened in a minor
+  release if needed for security; the changelog explains why.
+
+CI runs `cargo-semver-checks` on every pull request to catch accidental
+breaking changes.
 
 ## Releases
 
@@ -623,6 +660,7 @@ Each release adds one feature set; see the [changelog](CHANGELOG.md).
 | 1.0.0-beta.1  | Security toolkit: raw-byte passwords, IVs and keys; stream inspection and verification            |
 | 1.0.0-beta.2  | Type safety: validated key/IV/iteration types, `Secret<T>`, typestate toolkit, resource limits     |
 | 1.0.0-rc.1    | Assurance: no-panic lints, fuzzing, property tests, Miri, AES-NI capability token                 |
+| 1.0.0         | Stable API: semantic versioning, semver checks in CI, optional constant-time requirement          |
 
 ## Development
 
