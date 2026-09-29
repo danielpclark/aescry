@@ -57,6 +57,17 @@ impl Extension {
         Ok(Extension { raw: vec![0u8; len] })
     }
 
+    /// An extension made of arbitrary octets, written to the stream exactly
+    /// as given (1 to 65535 octets).  No identifier or terminator is
+    /// required, which allows malformed extensions for testing parsers.
+    pub fn from_bytes(raw: impl Into<Vec<u8>>) -> Result<Self, Error> {
+        let raw = raw.into();
+        if raw.is_empty() || raw.len() > MAX_EXTENSION_LEN {
+            return Err(Error::InvalidExtension("extension length must be 1 to 65535 octets"));
+        }
+        Ok(Extension { raw })
+    }
+
     /// Wrap the raw octets of an extension exactly as they appear in a stream.
     pub(crate) fn from_raw(raw: Vec<u8>) -> Self {
         Extension { raw }

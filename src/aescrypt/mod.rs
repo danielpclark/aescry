@@ -27,7 +27,7 @@ mod format;
 pub use self::format::{Extension, Header, DEFAULT_CONTAINER_LEN, MAX_EXTENSION_LEN};
 
 pub(crate) use self::engine::{
-    decrypt as decrypt_engine, encrypt as encrypt_engine, Credential, DecryptInfo, DecryptOptions,
+    decrypt as decrypt_engine, derive_key, encrypt as encrypt_engine, Credential, DecryptInfo, DecryptOptions,
     EncryptParams,
 };
 

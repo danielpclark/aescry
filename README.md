@@ -10,6 +10,9 @@ random number generator.
 - **`aescrypt`**: password-based encryption of data, streams and files in the
   AES Crypt format (reads versions 0–3, writes version 3), compatible with
   the AES Crypt 4.x tools
+- **`security`**: a toolkit for security work with raw-byte passwords, IVs
+  and keys; writes every format version, inspects and verifies streams, and
+  decrypts with recovered keys
 - **`cbc`**: encrypt and decrypt raw byte buffers with AES in CBC mode
 - **`aes`**: the AES-128, AES-192 and AES-256 block cipher (FIPS-197)
 - **`padding`**: PKCS#7 padding
@@ -25,7 +28,7 @@ random number generator.
 
 ```toml
 [dependencies]
-aescry = "0.6"
+aescry = "1.0.0-beta.1"
 ```
 
 `aescry` requires Rust 1.63 or newer.
@@ -81,12 +84,67 @@ encryptor.encrypt_stream(input, output)?;
 - `aescrypt::read_header` reads the unencrypted header: version, iteration
   count and extensions.
 
-| Format version | Read | Write | Key derivation     | Written by                  |
-|----------------|------|-------|--------------------|-----------------------------|
-| 3              | ✓    | ✓     | PBKDF2-HMAC-SHA512 | AES Crypt 4.x               |
-| 2              | ✓    |       | 8192 × SHA-256     | AES Crypt 3.x, pyAesCrypt   |
-| 1              | ✓    |       | 8192 × SHA-256     | older AES Crypt             |
-| 0              | ✓    |       | 8192 × SHA-256     | older AES Crypt             |
+| Format version | Read | Write            | Key derivation     | Written by                  |
+|----------------|------|------------------|--------------------|-----------------------------|
+| 3              | ✓    | ✓                | PBKDF2-HMAC-SHA512 | AES Crypt 4.x               |
+| 2              | ✓    | `security` only  | 8192 × SHA-256     | AES Crypt 3.x, pyAesCrypt   |
+| 1              | ✓    | `security` only  | 8192 × SHA-256     | older AES Crypt             |
+| 0              | ✓    | `security` only  | 8192 × SHA-256     | older AES Crypt             |
+
+### Security toolkit: raw bytes for passwords, IVs and keys
+
+The `security` module gives direct control over every input, for work such
+as testing other AES Crypt implementations, generating test vectors,
+forensics, and recovering your own data.
+
+```rust
+use aescry::security::{inspect, verify, Key, RawDecryptor, RawEncryptor};
+use aescry::Version;
+
+// Any octets can be the password: not necessarily UTF-8 or UTF-16.
+let password: &[u8] = &[0x00, 0xFF, 0xC3, 0x28];
+
+// Fixed IVs and session key make the output reproducible.
+let stream = RawEncryptor::new(Key::RawPassword(password))
+    .version(Version::V2)           // any format version, 0 to 3
+    .public_iv(&[0x01; 16])?
+    .session_iv(&[0x02; 16])?
+    .session_key(&[0x03; 32])?
+    .encrypt(b"test vector")?;
+
+// Map the stream's structure without a password.
+let layout = inspect(&stream)?;
+assert_eq!(layout.plaintext_len(), Some(11));
+
+// Check both HMACs without producing plaintext.
+assert!(verify(Key::RawPassword(password), &stream)?.is_authentic());
+
+// Decrypt, and get the derived key and session key.
+let opened = RawDecryptor::new(Key::RawPassword(password)).decrypt(&stream)?;
+assert_eq!(&opened.plaintext[..], b"test vector");
+let derived = *opened.report.derived_key().unwrap();
+
+// Later: skip key derivation, or bypass the password entirely.
+let again = RawDecryptor::new(Key::DerivedKey(&derived)).decrypt(&stream)?;
+let session = Key::Session { iv: opened.report.session_iv(), key: opened.report.session_key() };
+let again = RawDecryptor::new(session).decrypt(&stream)?;
+# let _ = again;
+# Ok::<(), aescry::Error>(())
+```
+
+The toolkit also offers:
+- `derive_key` and `password_bytes` show exactly what the key derivation
+  receives.
+- `RawDecryptor::skip_verification` decrypts damaged or tampered streams and
+  reports which HMACs failed.
+- `RawDecryptor::max_iterations` accepts iteration counts beyond the normal
+  limit.
+- `Extension::from_bytes` writes arbitrary, even malformed, header extensions
+  for testing parsers.
+- `ecb_encrypt` / `ecb_decrypt` are raw block operations.
+
+These tools make it easy to do unsafe things, like reusing IVs or trusting
+unauthenticated plaintext. Use `aescrypt` for everyday encryption.
 
 ### Encrypting byte buffers with a raw key (AES-CBC)
 
@@ -289,7 +347,9 @@ let version = detect::from_reader(std::io::stdin())?;
 - `Hmac::verify` compares tags in constant time. `Hmac::verify_truncated`
   refuses tags shorter than 80 bits.
 
-## Roadmap
+## Releases
+
+Each release adds one feature set; see the [changelog](CHANGELOG.md).
 
 | Version       | Feature set                                                                                       |
 |---------------|---------------------------------------------------------------------------------------------------|
@@ -315,9 +375,10 @@ Tests cover:
   CBC, SHA-2 known answers, HMAC from RFC 4231 and Project Wycheproof, and
   PBKDF2;
 - cross-checks against OpenSSL and Python's `hashlib`;
-- AES Crypt fixtures for every format version (see
-  [`tests/data/aescrypt`](tests/data/aescrypt)), each of which the official
-  AES Crypt tool also decrypts.
+- AES Crypt fixtures and byte-exact known-answer streams for every format
+  version (see [`tests/data/aescrypt`](tests/data/aescrypt)). They come from
+  an independent Python implementation, and the official AES Crypt tool
+  decrypts every one of them.
 
 To test with the minimum supported Rust version, first pick dependency
 versions that support it:

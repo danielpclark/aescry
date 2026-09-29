@@ -20,7 +20,6 @@ pub(crate) const MAX_ITERATIONS: u32 = 5_000_000;
 
 /// How the key for a stream is obtained.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))] // key credentials are used by the security toolkit
 pub(crate) enum Credential<'a> {
     /// A text password, encoded as each version expects (UTF-16LE for
     /// versions 0-2, UTF-8 for version 3).
@@ -203,7 +202,8 @@ fn encrypt_inner<R: Read, W: Write>(params: &EncryptParams<'_>, mut reader: R, w
 pub(crate) struct DecryptOptions {
     /// The largest PBKDF2 iteration count to accept.
     pub(crate) max_iterations: u32,
-    /// Check the HMACs.  Only the security toolkit turns this off.
+    /// Fail if an HMAC does not match.  Only the security toolkit turns
+    /// this off; the HMACs are still computed and reported.
     pub(crate) verify: bool,
 }
 
@@ -214,17 +214,17 @@ impl Default for DecryptOptions {
 }
 
 /// What was learned while decrypting a stream.
-#[cfg_attr(not(test), allow(dead_code))] // read by the security toolkit
 pub(crate) struct DecryptInfo {
     pub(crate) header: Header,
     pub(crate) plaintext_len: u64,
     pub(crate) derived_key: Option<Zeroizing<[u8; 32]>>,
     pub(crate) session_iv: [u8; 16],
     pub(crate) session_key: Zeroizing<[u8; 32]>,
-    /// Whether the key block HMAC matched (None if it was not checked).
+    /// Whether the key block HMAC matched (None if there is no key block or
+    /// it was bypassed with a session key).
     pub(crate) key_hmac_ok: Option<bool>,
-    /// Whether the ciphertext HMAC matched (None if it was not checked).
-    pub(crate) message_hmac_ok: Option<bool>,
+    /// Whether the ciphertext HMAC matched.
+    pub(crate) message_hmac_ok: bool,
 }
 
 /// Decrypt an AES Crypt stream from `reader` to `writer`.
@@ -272,18 +272,16 @@ pub(crate) fn decrypt<R: Read, W: Write>(
         match (credential, &derived_key) {
             (Credential::Session { iv, key }, _) => (Zeroizing::new(*key), *iv),
             (_, Some(derived)) => {
-                if options.verify {
-                    let mut mac = HmacSha256::new(&**derived);
-                    mac.update(encrypted);
-                    if version >= Version::V3 {
-                        mac.update(&[version.as_u8()]);
-                    }
+                let mut mac = HmacSha256::new(&**derived);
+                mac.update(encrypted);
+                if version >= Version::V3 {
+                    mac.update(&[version.as_u8()]);
+                }
 
-                    let ok = ct::eq(&mac.finalize(), tag);
-                    key_hmac_ok = Some(ok);
-                    if !ok {
-                        return Err(Error::InvalidPassword);
-                    }
+                let ok = ct::eq(&mac.finalize(), tag);
+                key_hmac_ok = Some(ok);
+                if !ok && options.verify {
+                    return Err(Error::InvalidPassword);
                 }
 
                 CbcDecryptor::new(Aes256::new(derived), &header.iv).decrypt_in_place(encrypted)?;
@@ -354,14 +352,10 @@ pub(crate) fn decrypt<R: Read, W: Write>(
         _ => (header.reserved, &trailer[..]),
     };
 
-    let mut message_hmac_ok = None;
-    if options.verify {
-        let ok = ct::eq(&mac.finalize(), tag);
-        message_hmac_ok = Some(ok);
-        if !ok {
-            // version 0 has only one HMAC, which also covers the password
-            return Err(if version == Version::V0 { Error::InvalidPassword } else { Error::AlteredMessage });
-        }
+    let message_hmac_ok = ct::eq(&mac.finalize(), tag);
+    if !message_hmac_ok && options.verify {
+        // version 0 has only one HMAC, which also covers the password
+        return Err(if version == Version::V0 { Error::InvalidPassword } else { Error::AlteredMessage });
     }
 
     decryptor.decrypt_in_place(last)?;
@@ -449,7 +443,7 @@ mod tests {
                 let (plain, info) = read(Credential::Text("pässword"), &stream).unwrap();
                 assert_eq!(plain, data, "{} length {}", version, len);
                 assert_eq!(info.plaintext_len, len as u64);
-                assert_eq!(info.message_hmac_ok, Some(true));
+                assert!(info.message_hmac_ok);
                 assert_eq!(info.key_hmac_ok, if version == Version::V0 { None } else { Some(true) });
 
                 assert!(matches!(read(Credential::Text("password"), &stream), Err(Error::InvalidPassword)));
@@ -516,7 +510,8 @@ mod tests {
         let options = DecryptOptions { verify: false, ..DecryptOptions::default() };
         let mut out = Vec::new();
         let info = decrypt(Credential::Text("pw"), &options, &stream[..], &mut out).unwrap();
-        assert_eq!(info.message_hmac_ok, None);
+        assert!(!info.message_hmac_ok);
+        assert_eq!(info.key_hmac_ok, Some(true));
         assert_eq!(out.len(), 40);
         // CBC: the damaged block is garbled and the same bit flips in the next
         assert_eq!(out[16], 7 ^ 1);

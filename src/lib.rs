@@ -20,6 +20,7 @@ pub mod hmac;
 pub mod kdf;
 pub mod padding;
 pub mod random;
+pub mod security;
 pub mod sha256;
 pub mod sha512;
 pub mod zeroize;
