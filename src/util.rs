@@ -1,11 +1,5 @@
-use std::slice;
 use std::fmt::LowerHex;
 use std::mem;
-
-pub fn memset(t: *mut u8, val: u8, qty: usize) {
-    let temp_target: &mut [u8] = unsafe { slice::from_raw_parts_mut(t, qty) };
-    for i in temp_target { *i = val; }
-}
 
 pub trait SliceToHex<T: LowerHex> {
     fn slice_to_hex(&self) -> String;
@@ -14,11 +8,9 @@ pub trait SliceToHex<T: LowerHex> {
 impl<T> SliceToHex<T> for [T] where T: std::fmt::LowerHex {
     fn slice_to_hex(&self) -> String {
         let mut hex_digest = String::with_capacity(self.len() * mem::size_of::<T>() * 2);
-        
-        let format = String::with_capacity(10);
 
-        for i in 0..self.len() {
-            hex_digest.push_str(&format!("{:0>pad$x}", self[i], pad=mem::size_of::<T>() * 2));
+        for v in self {
+            hex_digest.push_str(&format!("{:0>pad$x}", v, pad=mem::size_of::<T>() * 2));
         }
 
         hex_digest
