@@ -1,41 +1,157 @@
-// FIPS 180-2 compliant
+//! SHA-256, FIPS 180-2 compliant.
+//!
+//! ```
+//! use aescry::sha256::{sha256, Sha256};
+//!
+//! let mut hasher = Sha256::new();
+//! hasher.update(b"a");
+//! hasher.update(b"bc");
+//! assert_eq!(hasher.finalize(), sha256(b"abc"));
+//! ```
+
 use crate::algorithms::*;
-use crate::util::SliceToHex;
 
+/// SHA-256 digest size in octets.
+pub const OUTPUT_SIZE: usize = 32;
+
+/// SHA-256 internal block size in octets.
+pub const BLOCK_SIZE: usize = 64;
+
+const INITIAL_STATE: [u32; 8] = [
+    0x6A09E667,
+    0xBB67AE85,
+    0x3C6EF372,
+    0xA54FF53A,
+    0x510E527F,
+    0x9B05688C,
+    0x1F83D9AB,
+    0x5BE0CD19,
+];
+
+/// Compute the SHA-256 digest of `data` in one call.
+pub fn sha256(data: &[u8]) -> [u8; OUTPUT_SIZE] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
+/// An incremental SHA-256 hasher.
 #[derive(Clone)]
-pub(crate) struct SHA256Context {
-    pub(crate) total: u64, // total bytes processed
-    pub(crate) state: [u32; 8], // H
-    pub(crate) buffer: [u8; 64],
+pub struct Sha256 {
+    total: u64, // total bytes processed
+    state: [u32; 8], // H
+    buffer: [u8; BLOCK_SIZE],
 }
 
-impl SHA256Context {
-    fn hex_digest(&self) -> String {
-        <[u32]>::slice_to_hex(&self.state)
+impl Drop for Sha256 {
+    // the state and buffer are derived from the (possibly secret) input
+    fn drop(&mut self) {
+        crate::zeroize::Zeroize::zeroize(&mut self.state);
+        crate::zeroize::Zeroize::zeroize(&mut self.buffer);
+        self.total = 0;
     }
 }
 
-pub(crate) fn starts(context: Option<&mut SHA256Context>) -> SHA256Context {
-    let state = [
-        0x6A09E667,
-        0xBB67AE85,
-        0x3C6EF372,
-        0xA54FF53A,
-        0x510E527F,
-        0x9B05688C,
-        0x1F83D9AB,
-        0x5BE0CD19,
-    ];
-
-    match context {
-        Some(ctx) => { ctx.total = 0; ctx.state = state; ctx.clone() },
-        None => SHA256Context { total: 0, state: state, buffer: [0u8; 64] },
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-pub(crate) fn process(state: &mut [u32], data: &[u8]) {
+impl core::fmt::Debug for Sha256 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Sha256 { .. }")
+    }
+}
+
+impl Sha256 {
+    /// Create a hasher in its initial state.
+    pub fn new() -> Self {
+        Sha256 { total: 0, state: INITIAL_STATE, buffer: [0u8; BLOCK_SIZE] }
+    }
+
+    /// Return the hasher to its initial state.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Feed more data into the hash.
+    pub fn update(&mut self, mut input: &[u8]) {
+        if input.is_empty() { return; }
+        let mut left = (self.total & 0x3F) as usize;
+        let fill = 64 - left;
+
+        self.total = self.total.wrapping_add(input.len() as u64);
+
+        if left != 0 && input.len() >= fill {
+            self.buffer[left..].copy_from_slice(&input[..fill]);
+
+            process(&mut self.state, &self.buffer);
+
+            input = &input[fill..];
+            left = 0;
+        }
+
+        while input.len() >= 64 {
+            process(&mut self.state, &input[..64]);
+            input = &input[64..];
+        }
+
+        if !input.is_empty() {
+            self.buffer[left..left + input.len()].copy_from_slice(input);
+        }
+    }
+
+    /// Finish the hash and return the digest.
+    pub fn finalize(mut self) -> [u8; OUTPUT_SIZE] {
+        let mut digest = [0u8; OUTPUT_SIZE];
+        self.finish(&mut digest);
+        digest
+    }
+
+    /// Finish the hash, write the digest and reset the hasher for reuse.
+    pub fn finalize_reset(&mut self) -> [u8; OUTPUT_SIZE] {
+        let mut digest = [0u8; OUTPUT_SIZE];
+        self.finish(&mut digest);
+        self.reset();
+        digest
+    }
+
+    fn finish(&mut self, digest: &mut [u8; OUTPUT_SIZE]) {
+        let mut last = (self.total & 0x3F) as usize;
+
+        self.buffer[last] = 0x80;
+        last += 1;
+
+        if last <= 56 {
+            // Enough room for padding + length in current block
+            self.buffer[last..56].fill(0);
+        } else {
+            // We'll need an extra block.
+            self.buffer[last..].fill(0);
+
+            process(&mut self.state, &self.buffer);
+
+            self.buffer[..56].fill(0);
+        };
+
+        let bits = self.total.wrapping_shl(3);
+        let high: u32 = (bits >> 32) as u32;
+        let low:  u32 = bits as u32;
+
+        put_u32(high, &mut self.buffer, 56);
+        put_u32(low , &mut self.buffer, 60);
+
+        process(&mut self.state, &self.buffer);
+
+        for (i, word) in self.state.iter().enumerate() {
+            put_u32(*word, digest, i * 4);
+        }
+    }
+}
+
+pub(crate) fn process(state: &mut [u32; 8], data: &[u8]) {
     assert!(data.len() == 64, "invalid data length");
-    assert!(state.len() == 8, "invalid state length");
     let mut w: [u32; 64] = [0; 64];
 
     w[0]  = get_u32(data, 0);
@@ -139,164 +255,70 @@ pub(crate) fn process(state: &mut [u32], data: &[u8]) {
     state[7] = state[7].wrapping_add(h);
 }
 
-pub(crate) fn update(context: &mut SHA256Context, mut input: &[u8]) {
-    if input.is_empty() { return; }
-    let mut left = (context.total & 0x3F) as usize;
-    let fill = 64 - left;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::SliceToHex;
 
-    context.total = context.total.wrapping_add(input.len() as u64);
-
-    if left != 0 && input.len() >= fill {
-        context.buffer[left..].copy_from_slice(&input[..fill]);
-
-        process(&mut context.state, &context.buffer);
-
-        input = &input[fill..];
-        left = 0;
+    fn hex(msg: &[u8]) -> String {
+        <[u8]>::slice_to_hex(&sha256(msg))
     }
 
-    while input.len() >= 64 {
-        process(&mut context.state, &input[..64]);
-        input = &input[64..];
+    #[test]
+    fn one_block_message() {
+        assert_eq!(hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
-    if !input.is_empty() {
-        context.buffer[left..left + input.len()].copy_from_slice(input);
-    }
-}
+    #[test]
+    fn multi_block_message() {
+        let msg = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
 
-pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
-    let mut last = (context.total & 0x3F) as usize;
+        let mut ctx = Sha256::new();
+        ctx.update(msg);
 
-    context.buffer[last] = 0x80;
-    last += 1;
+        // 56 octets fit in the buffer without being processed
+        assert_eq!(ctx.state, INITIAL_STATE);
 
-    if last <= 56 {
-        // Enough room for padding + length in current block
-        context.buffer[last..56].fill(0);
-    } else {
-        // We'll need an extra block.
-        context.buffer[last..].fill(0);
-
-        process(&mut context.state, &context.buffer);
-
-        context.buffer[..56].fill(0);
-    };
-
-    let bits = context.total.wrapping_shl(3);
-    let high: u32 = (bits >> 32) as u32;
-    let low:  u32 = bits as u32;
-
-    put_u32(high, &mut context.buffer, 56);
-    put_u32(low , &mut context.buffer, 60);
-
-    process(&mut context.state, &context.buffer);
-
-    put_u32(context.state[0], digest,  0);
-    put_u32(context.state[1], digest,  4);
-    put_u32(context.state[2], digest,  8);
-    put_u32(context.state[3], digest, 12);
-    put_u32(context.state[4], digest, 16);
-    put_u32(context.state[5], digest, 20);
-    put_u32(context.state[6], digest, 24);
-    put_u32(context.state[7], digest, 28);
-}
-
-#[test]
-fn one_block_message() {
-    let msg: &'static str = "abc";
-    let val: &'static str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-
-    let mut ctx = starts(None);
-
-    update(&mut ctx, msg.as_bytes());
-
-    let mut sha256sum: [u8; 32] = [0u8; 32];
-
-    finish(&mut ctx, &mut sha256sum);
-
-    assert_eq!( ctx.hex_digest(), val );
-}
-
-#[test]
-fn multi_block_message() {
-    let msg: &'static str = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-    let val: &'static str = "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1";
-
-    let mut ctx = starts(None);
-
-    update(&mut ctx, msg.as_bytes());
-
-    assert_eq!(ctx.state[0], 0x6a09e667);
-    assert_eq!(ctx.state[1], 0xbb67ae85);
-    assert_eq!(ctx.state[2], 0x3c6ef372);
-    assert_eq!(ctx.state[3], 0xa54ff53a);
-    assert_eq!(ctx.state[4], 0x510e527f);
-    assert_eq!(ctx.state[5], 0x9b05688c);
-    assert_eq!(ctx.state[6], 0x1f83d9ab);
-    assert_eq!(ctx.state[7], 0x5be0cd19);
-
-    let mut sha256sum: [u8; 32] = [0u8; 32];
-
-    finish(&mut ctx, &mut sha256sum);
-
-    assert_eq!( ctx.hex_digest(), val );
-}
-
-#[test]
-fn long_message() {
-    let msg = "a".repeat(1000000);
-    let val: &'static str = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
-
-    let mut ctx = starts(None);
-
-    update(&mut ctx, msg.as_bytes());
-
-    let mut sha256sum: [u8; 32] = [0u8; 32];
-
-    finish(&mut ctx, &mut sha256sum);
-
-    assert_eq!( ctx.hex_digest(), val );
-}
-
-#[test]
-fn padding_boundaries() {
-    // 55 bytes fits padding + length in one block; 56 and 64 need an extra block
-    let cases: [(usize, &'static str); 3] = [
-        (55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
-        (56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
-        (64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
-    ];
-
-    for &(len, val) in cases.iter() {
-        let msg = "a".repeat(len);
-        let mut ctx = starts(None);
-
-        update(&mut ctx, msg.as_bytes());
-
-        let mut sha256sum: [u8; 32] = [0u8; 32];
-
-        finish(&mut ctx, &mut sha256sum);
-
-        assert_eq!( ctx.hex_digest(), val, "length {}", len );
-        assert_eq!( <[u8]>::slice_to_hex(&sha256sum), val, "length {}", len );
-    }
-}
-
-#[test]
-fn chunked_message() {
-    let msg = "a".repeat(1000000);
-    let val: &'static str = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
-
-    let mut ctx = starts(None);
-
-    for chunk in msg.as_bytes().chunks(37) {
-        update(&mut ctx, chunk);
+        assert_eq!(<[u8]>::slice_to_hex(&ctx.finalize()),
+                   "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
     }
 
-    let mut sha256sum: [u8; 32] = [0u8; 32];
+    #[test]
+    fn long_message() {
+        let msg = "a".repeat(1000000);
+        assert_eq!(hex(msg.as_bytes()), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+    }
 
-    finish(&mut ctx, &mut sha256sum);
+    #[test]
+    fn padding_boundaries() {
+        // 55 bytes fits padding + length in one block; 56 and 64 need an extra block
+        let cases: [(usize, &str); 4] = [
+            (0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            (55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
+            (56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
+            (64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
+        ];
 
-    assert_eq!( ctx.hex_digest(), val );
+        for &(len, val) in cases.iter() {
+            assert_eq!(hex("a".repeat(len).as_bytes()), val, "length {}", len);
+        }
+    }
+
+    #[test]
+    fn chunked_message() {
+        let msg = "a".repeat(1000000);
+
+        let mut ctx = Sha256::new();
+
+        for chunk in msg.as_bytes().chunks(37) {
+            ctx.update(chunk);
+        }
+
+        assert_eq!(<[u8]>::slice_to_hex(&ctx.finalize_reset()),
+                   "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+
+        // the hasher is reusable after finalize_reset
+        ctx.update(b"abc");
+        assert_eq!(ctx.finalize(), sha256(b"abc"));
+    }
 }

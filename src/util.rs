@@ -7,7 +7,7 @@ pub trait SliceToHex<T: LowerHex> {
 
 impl<T> SliceToHex<T> for [T] where T: std::fmt::LowerHex {
     fn slice_to_hex(&self) -> String {
-        let mut hex_digest = String::with_capacity(self.len() * mem::size_of::<T>() * 2);
+        let mut hex_digest = String::with_capacity(mem::size_of_val(self) * 2);
 
         for v in self {
             hex_digest.push_str(&format!("{:0>pad$x}", v, pad=mem::size_of::<T>() * 2));
