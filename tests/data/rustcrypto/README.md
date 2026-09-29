@@ -12,3 +12,4 @@ format. They were decoded with `blobby` 0.4.0 and written out unchanged as
 | File | Source | Fields | Origin of the vectors |
 |------|--------|--------|------------------------|
 | `aes128.txt`, `aes192.txt`, `aes256.txt` | [`RustCrypto/block-ciphers`](https://github.com/RustCrypto/block-ciphers) @ `b99ebe6a2d394833a14a84b79aac60c0c0611577`, `aes/tests/data/*.blb` | `key`, `pt`, `ct` | NESSIE |
+| `cbc_aes128.txt`, `cbc_aes192.txt`, `cbc_aes256.txt` | [`RustCrypto/block-modes`](https://github.com/RustCrypto/block-modes) @ `2fbded9b3a375351212b6bdcc48988f60a27a2b5`, `cbc/tests/data/*.blb` | `key`, `iv`, `pt`, `ct` | NIST CAVP AES Multiblock Message Test (MMT) |

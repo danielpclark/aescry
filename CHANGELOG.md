@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+Encrypting raw byte buffers.
+
+### Added
+- `cbc` module: AES-CBC (NIST SP 800-38A) for raw byte buffers with a raw
+  key and IV.
+  - `encrypt` / `decrypt` apply PKCS#7 padding.
+  - `encrypt_no_padding` / `decrypt_no_padding` for whole blocks.
+  - `encrypt_with_random_iv` / `decrypt_with_iv_prefix` store the IV in front
+    of the ciphertext.
+  - `CbcEncryptor` / `CbcDecryptor` for streaming over any `BlockCipher`.
+- `padding` module: PKCS#7 pad and unpad. Unpadding examines the whole final
+  block without branching on its contents.
+- `random` module: secure random bytes, IVs and keys from the operating
+  system, via the `getrandom` crate.
+- `Error` variants: `InvalidIvLength`, `InvalidCiphertextLength`,
+  `InvalidPadding` and `Random`.
+- Tests against the NIST CAVP CBC multiblock vectors from RustCrypto and the
+  NIST SP 800-38A CBC examples.
+
+### Changed
+- `getrandom` is now a dependency.
+
 ## [0.2.0] - Unreleased
 
 First release. The existing primitives are now a public API.
@@ -38,4 +62,5 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[0.3.0]: https://github.com/danielpclark/aescry/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/danielpclark/aescry/releases/tag/v0.2.0

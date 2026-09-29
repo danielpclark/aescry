@@ -1,6 +1,6 @@
 [package]
 name = "aescry"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Daniel P. Clark <6ftdan@gmail.com>"]
 edition = "2021"
 rust-version = "1.63"
@@ -16,3 +16,4 @@ categories = ["cryptography"]
 exclude = [".github"]
 
 [dependencies]
+getrandom = { version = "0.3", features = ["std"] }

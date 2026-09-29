@@ -11,7 +11,10 @@ mod error;
 mod util;
 
 pub mod aes;
+pub mod cbc;
 pub mod detect;
+pub mod padding;
+pub mod random;
 pub mod sha256;
 
 pub use crate::detect::Version;

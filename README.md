@@ -3,9 +3,14 @@
 AES encryption and decryption for Rust, with support for the
 [AES Crypt](https://www.aescrypt.com/aes_stream_format.html) file format.
 
-`aescry` implements its cryptography in pure Rust with no dependencies:
+`aescry` implements its cryptography in pure Rust. Its only dependency is
+[`getrandom`](https://crates.io/crates/getrandom), for the operating system's
+random number generator.
 
+- **`cbc`**: encrypt and decrypt raw byte buffers with AES in CBC mode
 - **`aes`**: the AES-128, AES-192 and AES-256 block cipher (FIPS-197)
+- **`padding`**: PKCS#7 padding
+- **`random`**: secure random keys, IVs and bytes
 - **`sha256`**: SHA-256 (FIPS 180-2)
 - **`detect`**: detection of AES Crypt files and streams (format versions 0–3)
 
@@ -13,12 +18,70 @@ AES encryption and decryption for Rust, with support for the
 
 ```toml
 [dependencies]
-aescry = "0.2"
+aescry = "0.3"
 ```
 
 `aescry` requires Rust 1.63 or newer.
 
 ## Usage
+
+### Encrypting byte buffers (AES-CBC)
+
+`cbc::encrypt` and `cbc::decrypt` take a raw key (16, 24 or 32 octets for
+AES-128, AES-192 or AES-256), a raw 16-octet IV and the data, and apply PKCS#7
+padding. Any bytes work as input: text, files read into memory, serialized
+data, and so on.
+
+```rust
+use aescry::{cbc, random};
+
+let key = random::bytes::<32>()?; // AES-256
+let iv = random::iv()?;           // never reuse an IV with the same key
+
+let data: &[u8] = &[0x00, 0xFF, 0x10, 0x80];
+let ciphertext = cbc::encrypt(&key, &iv, data)?;
+let plaintext = cbc::decrypt(&key, &iv, &ciphertext)?;
+assert_eq!(plaintext, data);
+# Ok::<(), aescry::Error>(())
+```
+
+To have the IV generated for you and stored in front of the ciphertext:
+
+```rust
+use aescry::{cbc, random};
+
+let key = random::bytes::<16>()?; // AES-128
+let message = cbc::encrypt_with_random_iv(&key, b"attack at dawn")?; // IV || ciphertext
+assert_eq!(cbc::decrypt_with_iv_prefix(&key, &message)?, b"attack at dawn");
+# Ok::<(), aescry::Error>(())
+```
+
+For data that is already a multiple of 16 octets there are
+`cbc::encrypt_no_padding` and `cbc::decrypt_no_padding`. For streaming, use
+`CbcEncryptor` and `CbcDecryptor`, which keep the chaining value between
+calls:
+
+```rust
+use aescry::aes::Aes128;
+use aescry::cbc::{CbcDecryptor, CbcEncryptor};
+
+let cipher = Aes128::new(&[0x42; 16]);
+let iv = [0x24; 16];
+let mut data = [0u8; 64];
+
+let mut encryptor = CbcEncryptor::new(&cipher, &iv);
+encryptor.encrypt_in_place(&mut data[..32])?; // any whole number of blocks
+encryptor.encrypt_in_place(&mut data[32..])?;
+
+let mut decryptor = CbcDecryptor::new(&cipher, &iv);
+decryptor.decrypt_in_place(&mut data)?;
+assert_eq!(data, [0u8; 64]);
+# Ok::<(), aescry::Error>(())
+```
+
+> **Note:** CBC keeps data confidential but does not detect tampering. If an
+> attacker can change the ciphertext, authenticate it with a MAC before
+> decrypting.
 
 ### AES block cipher
 
@@ -99,6 +162,9 @@ let version = detect::from_reader(std::io::stdin())?;
 
 ## Security
 
+- `cbc::decrypt` reports bad padding as an error. If callers can observe that
+  error for ciphertexts they choose, they can decrypt data (a padding oracle
+  attack). Verify a MAC before decrypting.
 - The AES implementation uses lookup tables indexed by secret data. Its
   timing can leak information about the key to an attacker who can measure it
   precisely, for example another tenant on the same machine. A hardware-backed,
@@ -123,9 +189,18 @@ cargo test
 cargo test --release   # faster run of the AES Monte Carlo tests
 ```
 
-Tests cover the FIPS-197 examples, the Rijndael Monte Carlo tests and the
-NESSIE AES vectors from the [RustCrypto](https://github.com/RustCrypto) project
-(see [`tests/data/rustcrypto`](tests/data/rustcrypto)).
+Tests cover the FIPS-197 examples, the Rijndael Monte Carlo tests, the
+NIST SP 800-38A CBC examples, and the NESSIE AES and NIST CAVP CBC vectors
+from the [RustCrypto](https://github.com/RustCrypto) project (see
+[`tests/data/rustcrypto`](tests/data/rustcrypto)).
+
+To test with the minimum supported Rust version, first pick dependency
+versions that support it:
+
+```sh
+CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo generate-lockfile
+cargo +1.63 test
+```
 
 ## License
 
