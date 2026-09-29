@@ -1,6 +1,4 @@
 #![allow(unused_imports, dead_code, unused_variables, unused_assignments, unused_macros)]
-#![feature(fixed_size_array)]
-#![feature(min_const_fn)]
 // ---------------------- Version 2 ------------------------
 //
 //   3 Octets - 'AES'
@@ -129,9 +127,9 @@ pub mod detect {
     use super::*;
 
     pub fn get_file(file: &str) -> Option<AesFile> {
-        let mut f = File::open(file).unwrap();
+        let mut f = File::open(file).ok()?;
         if is_aes_header(&mut f).is_err() { return None }
-        match byte_as_version(&mut f) {
+        match byte_as_version(&mut f)? {
             2 => Some(AesFile::new(2, file)),
             1 => Some(AesFile::new(1, file)),
             0 => Some(AesFile::new(0, file)),
@@ -149,10 +147,10 @@ pub mod detect {
         if &aes == b"AES" { Ok(()) } else { Err(()) }
     }
 
-    fn byte_as_version(file: &mut File) -> u8 {
+    fn byte_as_version(file: &mut File) -> Option<u8> {
         let mut version = [0; 1];
-        file.read_exact(&mut version).unwrap();
-        version[0]
+        file.read_exact(&mut version).ok()?;
+        Some(version[0])
     }
 
     fn skip_byte(file: &mut File) {
@@ -195,4 +193,29 @@ pub mod detect {
       file.read_exact(&mut hmac).unwrap();
       hmac
     }
+}
+
+#[test]
+fn detect_get_file() {
+    let dir = std::env::temp_dir().join(format!("aescry-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let write = |name: &str, bytes: &[u8]| {
+        let path = dir.join(name);
+        File::create(&path).unwrap().write_all(bytes).unwrap();
+        path.to_str().unwrap().to_string()
+    };
+
+    let v2 = write("v2.aes", b"AES\x02\x00");
+    let bad_version = write("v9.aes", b"AES\x09\x00");
+    let truncated = write("short.aes", b"AES");
+    let plain = write("plain.txt", b"hello");
+
+    assert_eq!(detect::get_file(&v2).map(|f| f.version), Some(2));
+    assert!(detect::get_file(&bad_version).is_none());
+    assert!(detect::get_file(&truncated).is_none());
+    assert!(detect::get_file(&plain).is_none());
+    assert!(detect::get_file(dir.join("missing.aes").to_str().unwrap()).is_none());
+
+    std::fs::remove_dir_all(&dir).unwrap();
 }

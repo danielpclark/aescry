@@ -1,13 +1,10 @@
 // FIPS 180-2 compliant
-use core::array::FixedSizeArray; // for `as_slice`
-use std::{slice, ptr, str};
-
 use crate::algorithms::*;
-use crate::util::{memset, SliceToHex};
+use crate::util::SliceToHex;
 
 #[derive(Clone)]
 pub(crate) struct SHA256Context {
-    pub(crate) total: [u32; 2],
+    pub(crate) total: u64, // total bytes processed
     pub(crate) state: [u32; 8], // H
     pub(crate) buffer: [u8; 64],
 }
@@ -31,8 +28,8 @@ pub(crate) fn starts(context: Option<&mut SHA256Context>) -> SHA256Context {
     ];
 
     match context {
-        Some(ctx) => { ctx.total = [0u32; 2]; ctx.state = state; ctx.clone() },
-        None => SHA256Context { total: [0u32; 2], state: state, buffer: [0u8; 64] },
+        Some(ctx) => { ctx.total = 0; ctx.state = state; ctx.clone() },
+        None => SHA256Context { total: 0, state: state, buffer: [0u8; 64] },
     }
 }
 
@@ -142,67 +139,53 @@ pub(crate) fn process(state: &mut [u32], data: &[u8]) {
     state[7] = state[7].wrapping_add(h);
 }
 
-pub(crate) fn update(context: &mut SHA256Context, input: &[u8], length: &mut u32) {
-    if *length == 0 { return; }
-    let mut left = context.total[0] & 0x3F;
+pub(crate) fn update(context: &mut SHA256Context, mut input: &[u8]) {
+    if input.is_empty() { return; }
+    let mut left = (context.total & 0x3F) as usize;
     let fill = 64 - left;
 
-    context.total[0] += *length;
-    context.total[0] &= 0xFFFFFFFF;
+    context.total = context.total.wrapping_add(input.len() as u64);
 
-    if context.total[0] < *length {
-        context.total[1] += 1;
-    }
-
-    let bfr_ptr = context.buffer.as_ptr() as *mut u8;
-    let mut ipt_ptr = input.as_ptr() as *mut u8;
-
-    if left != 0 && *length >= fill {
-        unsafe { ptr::copy_nonoverlapping(ipt_ptr, bfr_ptr.add(left as usize), fill as usize); }
+    if left != 0 && input.len() >= fill {
+        context.buffer[left..].copy_from_slice(&input[..fill]);
 
         process(&mut context.state, &context.buffer);
 
-        *length -= fill;
-        ipt_ptr = unsafe { ipt_ptr.add(fill as usize) };
+        input = &input[fill..];
         left = 0;
     }
 
-    while *length >= 64 {
-        let temp_input: &[u8] = unsafe { slice::from_raw_parts(ipt_ptr, 64) };
-        process(&mut context.state, temp_input);
-        *length -= 64;
-        ipt_ptr = unsafe { ipt_ptr.add(64) };
+    while input.len() >= 64 {
+        process(&mut context.state, &input[..64]);
+        input = &input[64..];
     }
 
-    if *length != 0 {
-        let temp_input: &[u8] = unsafe { slice::from_raw_parts(ipt_ptr, 64) };
-        unsafe { ptr::copy_nonoverlapping(ipt_ptr, bfr_ptr.add(left as usize), fill as usize); }
+    if !input.is_empty() {
+        context.buffer[left..left + input.len()].copy_from_slice(input);
     }
 }
 
 pub(crate) fn finish(context: &mut SHA256Context, digest: &mut [u8; 32]) {
-    let mut last: u32 = context.total[0] & 0x3F;
+    let mut last = (context.total & 0x3F) as usize;
 
-    context.buffer[last as usize] = 0x80;
+    context.buffer[last] = 0x80;
     last += 1;
 
-    let bfr_ptr = context.buffer.as_ptr() as *mut u8;
-
-    if last < 56 {
+    if last <= 56 {
         // Enough room for padding + length in current block
-        memset(unsafe { bfr_ptr.add(last as usize) }, 0, 56 - last as usize);
+        context.buffer[last..56].fill(0);
     } else {
         // We'll need an extra block.
-        memset(unsafe { bfr_ptr.add(last as usize) }, 0, 64 - last as usize);
+        context.buffer[last..].fill(0);
 
         process(&mut context.state, &context.buffer);
 
-        memset(bfr_ptr, 0, 56);
+        context.buffer[..56].fill(0);
     };
 
-    let high: u32 = (context.total[0] >> 29) | (context.total[1] <<  3);
-    let low:  u32 =  context.total[0] <<  3;
-    let msglen: &mut [u8] = &mut [0u8; 8];
+    let bits = context.total.wrapping_shl(3);
+    let high: u32 = (bits >> 32) as u32;
+    let low:  u32 = bits as u32;
 
     put_u32(high, &mut context.buffer, 56);
     put_u32(low , &mut context.buffer, 60);
@@ -226,7 +209,7 @@ fn one_block_message() {
 
     let mut ctx = starts(None);
 
-    update(&mut ctx, msg.as_bytes(), &mut (msg.len() as u32));
+    update(&mut ctx, msg.as_bytes());
 
     let mut sha256sum: [u8; 32] = [0u8; 32];
 
@@ -242,7 +225,7 @@ fn multi_block_message() {
 
     let mut ctx = starts(None);
 
-    update(&mut ctx, msg.as_bytes(), &mut (msg.len() as u32));
+    update(&mut ctx, msg.as_bytes());
 
     assert_eq!(ctx.state[0], 0x6a09e667);
     assert_eq!(ctx.state[1], 0xbb67ae85);
@@ -267,7 +250,49 @@ fn long_message() {
 
     let mut ctx = starts(None);
 
-    update(&mut ctx, msg.as_bytes(), &mut (msg.len() as u32));
+    update(&mut ctx, msg.as_bytes());
+
+    let mut sha256sum: [u8; 32] = [0u8; 32];
+
+    finish(&mut ctx, &mut sha256sum);
+
+    assert_eq!( ctx.hex_digest(), val );
+}
+
+#[test]
+fn padding_boundaries() {
+    // 55 bytes fits padding + length in one block; 56 and 64 need an extra block
+    let cases: [(usize, &'static str); 3] = [
+        (55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
+        (56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
+        (64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
+    ];
+
+    for &(len, val) in cases.iter() {
+        let msg = "a".repeat(len);
+        let mut ctx = starts(None);
+
+        update(&mut ctx, msg.as_bytes());
+
+        let mut sha256sum: [u8; 32] = [0u8; 32];
+
+        finish(&mut ctx, &mut sha256sum);
+
+        assert_eq!( ctx.hex_digest(), val, "length {}", len );
+        assert_eq!( <[u8]>::slice_to_hex(&sha256sum), val, "length {}", len );
+    }
+}
+
+#[test]
+fn chunked_message() {
+    let msg = "a".repeat(1000000);
+    let val: &'static str = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+
+    let mut ctx = starts(None);
+
+    for chunk in msg.as_bytes().chunks(37) {
+        update(&mut ctx, chunk);
+    }
 
     let mut sha256sum: [u8; 32] = [0u8; 32];
 

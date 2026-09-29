@@ -1,6 +1,5 @@
 use crate::fixed_tables::{FORWARD_SBOX, REVERSE_SBOX};
-use crate::util::{memset, SliceToHex};
-use std::slice;
+use crate::util::SliceToHex;
 
 use crate::algorithms::{
     get_u32,
@@ -12,7 +11,7 @@ use crate::algorithms::{
 pub struct AesContext {
     erk: [u32; 64],
     drk: [u32; 64],
-    nr: isize,
+    nr: usize,
 }
 
 impl AesContext {
@@ -86,7 +85,6 @@ const RCON: Rcon = [
 // decryption key schedule tables
 
 pub struct KeyTables {
-    pub init: bool,
     pub kt0: [u32; 256],
     pub kt1: [u32; 256],
     pub kt2: [u32; 256],
@@ -96,7 +94,6 @@ pub struct KeyTables {
 impl KeyTables {
     const fn new() -> KeyTables {
         KeyTables {
-            init: false,
             kt0: [0u32; 256],
             kt1: [0u32; 256],
             kt2: [0u32; 256],
@@ -180,7 +177,7 @@ pub fn gen_tables() -> ContextTables {
 
     let mul = |a,b| {
         if a != 0 && b != 0 {
-            pow[(log[a as usize].wrapping_add(log[b as usize])) as usize % 255] as u8
+            pow[(log[a as usize] as usize + log[b as usize] as usize) % 255]
         } else {
             0
         }
@@ -231,172 +228,151 @@ pub fn gen_tables() -> ContextTables {
         rt3: rt3,
     };
 
+    // generate the decryption key schedule tables
+
+    let mut kt = KeyTables::new();
+
+    for i in 0..256 {
+        kt.kt0[i] = rt.rt0[ ft.fsb[i] as usize ];
+        kt.kt1[i] = rt.rt1[ ft.fsb[i] as usize ];
+        kt.kt2[i] = rt.rt2[ ft.fsb[i] as usize ];
+        kt.kt3[i] = rt.rt3[ ft.fsb[i] as usize ];
+    }
+
     ContextTables {
         ft: ft,
         rt: rt,
         rc: rcon,
-        kt: KeyTables::new(),
+        kt: kt,
     }
 }
 
 // AES key scheduling routine
 
-pub fn set_key(context: &mut AesContext, tables: &mut ContextTables, key: &[u8], nbits: isize) {
-    match nbits {
-        128 => { context.nr = 10; },
-        192 => { context.nr = 12; },
-        256 => { context.nr = 14; },
-        _ => (),
-    }
+#[derive(Debug, PartialEq)]
+pub struct InvalidKeySize;
 
-    let mut rk = context.erk;
+pub fn set_key(context: &mut AesContext, tables: &ContextTables, key: &[u8], nbits: usize) -> Result<(), InvalidKeySize> {
+    context.nr = match nbits {
+        128 => 10,
+        192 => 12,
+        256 => 14,
+        _ => return Err(InvalidKeySize),
+    };
 
-    for i in 0..(nbits as usize >> 5) {
+    if key.len() < nbits / 8 { return Err(InvalidKeySize); }
+
+    let fsb = &tables.ft.fsb;
+
+    // SubWord(RotWord(x))
+    let sub_rot = |x: u32| -> u32 {
+        ((fsb[(x >> 16) as u8 as usize] as u32) << 24) ^
+        ((fsb[(x >>  8) as u8 as usize] as u32) << 16) ^
+        ((fsb[(x      ) as u8 as usize] as u32) <<  8) ^
+        ((fsb[(x >> 24) as u8 as usize] as u32)      )
+    };
+
+    // SubWord(x)
+    let sub = |x: u32| -> u32 {
+        ((fsb[(x >> 24) as u8 as usize] as u32) << 24) ^
+        ((fsb[(x >> 16) as u8 as usize] as u32) << 16) ^
+        ((fsb[(x >>  8) as u8 as usize] as u32) <<  8) ^
+        ((fsb[(x      ) as u8 as usize] as u32)      )
+    };
+
+    let rk = &mut context.erk;
+
+    for i in 0..(nbits >> 5) {
         rk[i] = get_u32( key, i * 4 )
     }
 
     // setup encryption round keys
 
-    let mut rk_ptr = rk.as_ptr() as *mut u32;
-
     match nbits {
         128 => {
-            let shifting = 4;
             for i in 0..10 {
-                let temp_rk: &mut [u32] = unsafe { slice::from_raw_parts_mut(rk_ptr, 64 - (i * shifting)) };
+                let o = i * 4;
 
-                temp_rk[4] = temp_rk[0] ^ tables.rc[i] ^
-                    ((tables.ft.fsb[(temp_rk[3] >> 16) as u8 as usize] as u32) << 24) ^
-                    ((tables.ft.fsb[(temp_rk[3] >>  8) as u8 as usize] as u32) << 16) ^
-                    ((tables.ft.fsb[(temp_rk[3]      ) as u8 as usize] as u32) <<  8) ^
-                    ((tables.ft.fsb[(temp_rk[3] >> 24) as u8 as usize] as u32)      );
-
-                temp_rk[5]  = temp_rk[1] ^ temp_rk[4];
-                temp_rk[6]  = temp_rk[2] ^ temp_rk[5];
-                temp_rk[7]  = temp_rk[3] ^ temp_rk[6];
-
-                rk_ptr = unsafe { rk_ptr.add(shifting) };
+                rk[o + 4]  = rk[o    ] ^ tables.rc[i] ^ sub_rot(rk[o + 3]);
+                rk[o + 5]  = rk[o + 1] ^ rk[o + 4];
+                rk[o + 6]  = rk[o + 2] ^ rk[o + 5];
+                rk[o + 7]  = rk[o + 3] ^ rk[o + 6];
             }
         },
         192 => {
-            let shifting = 6;
             for i in 0..8 {
-                let temp_rk: &mut [u32] = unsafe { slice::from_raw_parts_mut(rk_ptr, 64 - (i * shifting)) };
+                let o = i * 6;
 
-                temp_rk[6] = temp_rk[0] ^ tables.rc[i] ^
-                    ((tables.ft.fsb[(temp_rk[5] >> 16) as u8 as usize] as u32) << 24) ^
-                    ((tables.ft.fsb[(temp_rk[5] >>  8) as u8 as usize] as u32) << 16) ^
-                    ((tables.ft.fsb[(temp_rk[5]      ) as u8 as usize] as u32) <<  8) ^
-                    ((tables.ft.fsb[(temp_rk[5] >> 24) as u8 as usize] as u32)      );
-
-                temp_rk[7]   = temp_rk[1] ^ temp_rk[6];
-                temp_rk[8]   = temp_rk[2] ^ temp_rk[7];
-                temp_rk[9]   = temp_rk[3] ^ temp_rk[8];
-                temp_rk[10]  = temp_rk[4] ^ temp_rk[9];
-                temp_rk[11]  = temp_rk[5] ^ temp_rk[10];
-
-                rk_ptr = unsafe { rk_ptr.add(shifting) };
+                rk[o + 6]  = rk[o    ] ^ tables.rc[i] ^ sub_rot(rk[o + 5]);
+                rk[o + 7]  = rk[o + 1] ^ rk[o + 6];
+                rk[o + 8]  = rk[o + 2] ^ rk[o + 7];
+                rk[o + 9]  = rk[o + 3] ^ rk[o + 8];
+                rk[o + 10] = rk[o + 4] ^ rk[o + 9];
+                rk[o + 11] = rk[o + 5] ^ rk[o + 10];
             }
         },
-        256 => {
-            let shifting = 8;
+        _ => {
             for i in 0..7 {
-                let temp_rk: &mut [u32] = unsafe { slice::from_raw_parts_mut(rk_ptr, 64 - (i * shifting)) };
+                let o = i * 8;
 
-                temp_rk[8] = temp_rk[0] ^ tables.rc[i] ^
-                    ((tables.ft.fsb[(temp_rk[7] >> 16) as u8 as usize] as u32) << 24) ^
-                    ((tables.ft.fsb[(temp_rk[7] >>  8) as u8 as usize] as u32) << 16) ^
-                    ((tables.ft.fsb[(temp_rk[7]      ) as u8 as usize] as u32) <<  8) ^
-                    ((tables.ft.fsb[(temp_rk[7] >> 24) as u8 as usize] as u32)      );
+                rk[o + 8]  = rk[o    ] ^ tables.rc[i] ^ sub_rot(rk[o + 7]);
+                rk[o + 9]  = rk[o + 1] ^ rk[o + 8];
+                rk[o + 10] = rk[o + 2] ^ rk[o + 9];
+                rk[o + 11] = rk[o + 3] ^ rk[o + 10];
 
-                temp_rk[9]   = temp_rk[1] ^ temp_rk[8];
-                temp_rk[10]  = temp_rk[2] ^ temp_rk[9];
-                temp_rk[11]  = temp_rk[3] ^ temp_rk[10];
-
-                temp_rk[12] = temp_rk[4] ^ tables.rc[i] ^
-                    ((tables.ft.fsb[(temp_rk[11] >> 16) as u8 as usize] as u32) << 24) ^
-                    ((tables.ft.fsb[(temp_rk[11] >>  8) as u8 as usize] as u32) << 16) ^
-                    ((tables.ft.fsb[(temp_rk[11]      ) as u8 as usize] as u32) <<  8) ^
-                    ((tables.ft.fsb[(temp_rk[11] >> 24) as u8 as usize] as u32)      );
-
-                temp_rk[13]  = temp_rk[5] ^ temp_rk[12];
-                temp_rk[14]  = temp_rk[6] ^ temp_rk[13];
-                temp_rk[15]  = temp_rk[7] ^ temp_rk[14];
-
-                rk_ptr = unsafe { rk_ptr.add(shifting) };
+                rk[o + 12] = rk[o + 4] ^ sub(rk[o + 11]);
+                rk[o + 13] = rk[o + 5] ^ rk[o + 12];
+                rk[o + 14] = rk[o + 6] ^ rk[o + 13];
+                rk[o + 15] = rk[o + 7] ^ rk[o + 14];
             }
         },
-        _ => ()
     }
 
     // setup decryption round keys
+    //
+    // The decryption round keys are the encryption round keys in reverse
+    // order, with InvMixColumns applied to all but the first and last.
 
-    if tables.kt.init {
-        for i in 0..256 {
-            tables.kt.kt0[i] = tables.rt.rt0[ tables.ft.fsb[i] as usize ];
-            tables.kt.kt1[i] = tables.rt.rt1[ tables.ft.fsb[i] as usize ];
-            tables.kt.kt2[i] = tables.rt.rt2[ tables.ft.fsb[i] as usize ];
-            tables.kt.kt3[i] = tables.rt.rt3[ tables.ft.fsb[i] as usize ];
-        }
+    let kt = &tables.kt;
+    let rk = &context.erk;
+    let sk = &mut context.drk;
 
-        tables.kt.init = false
-    }
+    let mut r = context.nr * 4;
 
-    let sk = context.drk;
-
-    let sk_ptr = sk.as_ptr() as *mut u32;
-
-    // equivelant to C's
-    //     *A++ == *B++
-    let ptr_cp_incr = |mut a: *mut u32, mut b: *mut u32| {
-        let ref_a: &mut u32 = unsafe { &mut *a };
-        let ref_b: &u32 = unsafe { &*b };
-
-        *ref_a = *ref_b;
-
-        a = unsafe { a.add(1) };
-        b = unsafe { b.add(1) };
-    };
-
-    for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
-
-    let sk_from_key_table_flip = |mut sk_ptr: *mut u32, mut rk_ptr: *mut u32| {
-        let ref_sk: &mut u32 = unsafe { &mut *sk_ptr };
-        let ref_rk: &u32 = unsafe { &*rk_ptr };
-
-        *ref_sk = tables.kt.kt0[ (*(ref_rk) >> 24) as u8 as usize ] ^
-                  tables.kt.kt1[ (*(ref_rk) >> 16) as u8 as usize ] ^
-                  tables.kt.kt2[ (*(ref_rk) >>  8) as u8 as usize ] ^
-                  tables.kt.kt3[ (*(ref_rk)      ) as u8 as usize ];
-
-        sk_ptr = unsafe { sk_ptr.add(1) };
-        rk_ptr = unsafe { rk_ptr.add(1) };
-    };
+    sk[..4].copy_from_slice(&rk[r..r + 4]);
 
     for i in 1..context.nr {
-        rk_ptr = unsafe { rk_ptr.sub(8) };
+        r -= 4;
 
-        for _ in 0..4 { sk_from_key_table_flip(sk_ptr, rk_ptr); }
+        for j in 0..4 {
+            let x = rk[r + j];
+
+            sk[i * 4 + j] = kt.kt0[ (x >> 24) as u8 as usize ] ^
+                            kt.kt1[ (x >> 16) as u8 as usize ] ^
+                            kt.kt2[ (x >>  8) as u8 as usize ] ^
+                            kt.kt3[ (x      ) as u8 as usize ];
+        }
     }
 
-    rk_ptr = unsafe { rk_ptr.sub(8) };
+    r -= 4;
 
-    for _ in 0..4 { ptr_cp_incr(sk_ptr, rk_ptr); }
+    let n = context.nr * 4;
+    sk[n..n + 4].copy_from_slice(&rk[r..r + 4]);
+
+    Ok(())
 }
 
 // AES 128-bit block encryption routine
 
-pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], output: &mut [u8; 16]) {
-    let rk = context.erk;
+pub fn encrypt(context: &AesContext, tables: &ContextTables, input: [u8; 16], output: &mut [u8; 16]) {
+    let rk = &context.erk;
 
     let mut x0 = get_u32(&input,  0); x0 ^= rk[0];
     let mut x1 = get_u32(&input,  4); x1 ^= rk[1];
     let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
     let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
 
-    let mut rk_ptr = rk.as_ptr() as *const u32;
-
-    let mut remaining = 0;
+    let mut offset = 0;
 
     let mut aes_fround = |x0: &mut u32,
                           x1: &mut u32,
@@ -406,9 +382,9 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                           y1: &u32,
                           y2: &u32,
                           y3: &u32| {
-        rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
+        offset += 4;
 
-        let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+        let temp_rk: &[u32] = &rk[offset..];
 
         *x0 = temp_rk[0] ^ tables.ft.ft0[ (*(y0) >> 24) as u8 as usize ] ^
                            tables.ft.ft1[ (*(y1) >> 16) as u8 as usize ] ^
@@ -459,8 +435,8 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
 
     // last round
 
-    rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
-    let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+    offset += 4;
+    let temp_rk: &[u32] = &rk[offset..];
 
     x0 = temp_rk[0] ^ ((tables.ft.fsb[ (y0 >> 24) as u8 as usize ] as u32) << 24) ^
                       ((tables.ft.fsb[ (y1 >> 16) as u8 as usize ] as u32) << 16) ^
@@ -490,17 +466,15 @@ pub fn encrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
 
 // AES 128-bit block decryption routine
 
-pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8; 16], output: &mut [u8; 16]) {
-    let rk = context.drk;
+pub fn decrypt(context: &AesContext, tables: &ContextTables, input: [u8; 16], output: &mut [u8; 16]) {
+    let rk = &context.drk;
 
     let mut x0 = get_u32(&input,  0); x0 ^= rk[0];
     let mut x1 = get_u32(&input,  4); x1 ^= rk[1];
     let mut x2 = get_u32(&input,  8); x2 ^= rk[2];
     let mut x3 = get_u32(&input, 12); x3 ^= rk[3];
 
-    let mut rk_ptr = rk.as_ptr() as *const u32;
-
-    let mut remaining = 0;
+    let mut offset = 0;
 
     let mut aes_rround = |x0: &mut u32,
                           x1: &mut u32,
@@ -510,9 +484,9 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
                           y1: &u32,
                           y2: &u32,
                           y3: &u32| {
-        rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
+        offset += 4;
 
-        let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+        let temp_rk: &[u32] = &rk[offset..];
 
         *x0 = temp_rk[0] ^ tables.rt.rt0[ (*(y0) >> 24) as u8 as usize ] ^
                            tables.rt.rt1[ (*(y3) >> 16) as u8 as usize ] ^
@@ -563,8 +537,8 @@ pub fn decrypt(context: &mut AesContext, tables: &mut ContextTables, input: [u8;
 
     // last round
 
-    rk_ptr = unsafe { rk_ptr.add(4) }; remaining += 4;
-    let temp_rk: &[u32] = unsafe { slice::from_raw_parts(rk_ptr, 64 - remaining) };
+    offset += 4;
+    let temp_rk: &[u32] = &rk[offset..];
 
     x0 = temp_rk[0] ^ ((tables.rt.rsb[ (y0 >> 24) as u8 as usize ] as u32) << 24) ^
                       ((tables.rt.rsb[ (y3 >> 16) as u8 as usize ] as u32) << 16) ^
@@ -611,74 +585,119 @@ static AES_DEC_TEST: [[u8; 16]; 3] = [
       0x84, 0x60, 0x4D, 0x60, 0x27, 0x1B, 0xC5, 0x9A ]
 ];
 
-#[test]
-fn c3_aes256_nk8_nk14() {
-    let plaintext = "00112233445566778899aabbccddeeff";
-    let mut buf = [0u8; 16];
-    let key: [u8; 32] = [
-        0x00,        0x01,        0x02,        0x03,
-        0x04,        0x05,        0x06,        0x07,
-        0x08,        0x09,        0x0a,        0x0b,
-        0x0c,        0x0d,        0x0e,        0x0f,
-        0x10,        0x11,        0x12,        0x13,
-        0x14,        0x15,        0x16,        0x17,
-        0x18,        0x19,        0x1a,        0x1b,
-        0x1c,        0x1d,        0x1e,        0x1f,
-    ];
+#[cfg(test)]
+fn fips197_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    for (i, k) in key.iter_mut().enumerate() { *k = i as u8; }
+    key
+}
 
+#[cfg(test)]
+const FIPS197_PLAINTEXT: [u8; 16] = [
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+    0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+];
+
+#[cfg(test)]
+fn fips197_roundtrip(nbits: usize, ciphertext: &str) {
+    let key = fips197_key();
+    let tables = gen_tables();
     let mut ctx = AesContext::new();
-    let mut tables = gen_tables();
 
-    set_key(&mut ctx, &mut tables, &key, 256);
+    set_key(&mut ctx, &tables, &key[..nbits / 8], nbits).unwrap();
 
-    encrypt(&mut ctx, &mut tables, buf, &mut buf);
+    let mut buf = [0u8; 16];
+    encrypt(&ctx, &tables, FIPS197_PLAINTEXT, &mut buf);
+    assert_eq!(<[u8]>::slice_to_hex(&buf), ciphertext);
 
-    assert_eq!(<[u8]>::slice_to_hex(&buf), "63");
+    let mut out = [0u8; 16];
+    decrypt(&ctx, &tables, buf, &mut out);
+    assert_eq!(out, FIPS197_PLAINTEXT);
 }
 
 #[test]
-fn test_encrypt() {
-    let mut buf = [0u8; 16];
-    let mut key = [0u8; 32];
+fn c1_aes128_nk4_nr10() {
+    fips197_roundtrip(128, "69c4e0d86a7b0430d8cdb78070b4c55a");
+}
 
+#[test]
+fn c2_aes192_nk6_nr12() {
+    fips197_roundtrip(192, "dda97ca4864cdfe06eaf70a0ec0d7191");
+}
+
+#[test]
+fn c3_aes256_nk8_nr14() {
+    fips197_roundtrip(256, "8ea2b7ca516745bfeafc49904b496089");
+}
+
+#[test]
+fn invalid_key_size() {
+    let tables = gen_tables();
     let mut ctx = AesContext::new();
-    let mut tables = gen_tables();
+
+    assert_eq!(set_key(&mut ctx, &tables, &[0u8; 32], 64), Err(InvalidKeySize));
+    assert_eq!(set_key(&mut ctx, &tables, &[0u8; 16], 256), Err(InvalidKeySize));
+}
+
+#[test]
+fn generated_tables_match_fixed_tables() {
+    let tables = gen_tables();
+
+    assert_eq!(&tables.ft.fsb[..], &FORWARD_TABLES.fsb[..]);
+    assert_eq!(&tables.ft.ft0[..], &FORWARD_TABLES.ft0[..]);
+    assert_eq!(&tables.ft.ft1[..], &FORWARD_TABLES.ft1[..]);
+    assert_eq!(&tables.ft.ft2[..], &FORWARD_TABLES.ft2[..]);
+    assert_eq!(&tables.ft.ft3[..], &FORWARD_TABLES.ft3[..]);
+
+    assert_eq!(&tables.rt.rsb[..], &REVERSE_TABLES.rsb[..]);
+    assert_eq!(&tables.rt.rt0[..], &REVERSE_TABLES.rt0[..]);
+    assert_eq!(&tables.rt.rt1[..], &REVERSE_TABLES.rt1[..]);
+    assert_eq!(&tables.rt.rt2[..], &REVERSE_TABLES.rt2[..]);
+    assert_eq!(&tables.rt.rt3[..], &REVERSE_TABLES.rt3[..]);
+
+    assert_eq!(tables.rc, RCON);
+}
+
+// Rijndael Monte Carlo Test (ECB mode)
+#[cfg(test)]
+fn monte_carlo(expected: &[[u8; 16]; 3], cipher: fn(&AesContext, &ContextTables, [u8; 16], &mut [u8; 16])) {
+    let mut ctx = AesContext::new();
+    let tables = gen_tables();
 
     for n in 0..3 {
-        memset(buf.as_ptr() as *mut u8, 0, 16);
-        memset(key.as_ptr() as *mut u8, 0, 16 + n * 8);
+        let mut buf = [0u8; 16];
+        let mut key = [0u8; 32];
 
-        for i in 0..400 {
-            set_key(&mut ctx, &mut tables, &key, (128 + n * 64) as isize);
+        for _ in 0..400 {
+            set_key(&mut ctx, &tables, &key, 128 + n * 64).unwrap();
 
-            for j in 0..999 {
-                encrypt(&mut ctx, &mut tables, buf, &mut buf);
+            for _ in 0..9999 {
+                cipher(&ctx, &tables, buf, &mut buf);
             }
 
             if n > 0 {
-                let mut j = 0;
-                loop {
-                    if j >= (n << 3) { break; }
-
+                for j in 0..(n << 3) {
                     key[j] ^= buf[j + 16 - (n << 3)];
-                    j += 1;
                 }
             }
 
-            encrypt(&mut ctx, &mut tables, buf, &mut buf);
+            cipher(&ctx, &tables, buf, &mut buf);
 
             for j in 0..16 {
                 key[j + (n << 3)] ^= buf[j];
             }
         }
-        for i in 0..16 {
-            assert_eq!(buf[i], AES_ENC_TEST[n][i]);
-        }
+
+        assert_eq!(buf, expected[n], "key size = {} bits", 128 + n * 64);
     }
 }
 
 #[test]
+fn test_encrypt() {
+    monte_carlo(&AES_ENC_TEST, encrypt);
+}
+
+#[test]
 fn test_decrypt() {
-    for n in 0..3 {
-    }
+    monte_carlo(&AES_DEC_TEST, decrypt);
 }
