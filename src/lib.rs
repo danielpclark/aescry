@@ -11,6 +11,7 @@ mod error;
 mod util;
 
 pub mod aes;
+pub mod aescrypt;
 pub mod cbc;
 pub mod ct;
 pub mod detect;

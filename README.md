@@ -7,6 +7,9 @@ AES encryption and decryption for Rust, with support for the
 [`getrandom`](https://crates.io/crates/getrandom), for the operating system's
 random number generator.
 
+- **`aescrypt`**: password-based encryption of data, streams and files in the
+  AES Crypt format (reads versions 0–3, writes version 3), compatible with
+  the AES Crypt 4.x tools
 - **`cbc`**: encrypt and decrypt raw byte buffers with AES in CBC mode
 - **`aes`**: the AES-128, AES-192 and AES-256 block cipher (FIPS-197)
 - **`padding`**: PKCS#7 padding
@@ -21,14 +24,70 @@ random number generator.
 
 ```toml
 [dependencies]
-aescry = "0.4"
+aescry = "0.5"
 ```
 
 `aescry` requires Rust 1.63 or newer.
 
 ## Usage
 
-### Encrypting byte buffers (AES-CBC)
+### Encrypting with a password (AES Crypt format)
+
+`aescrypt::encrypt` and `aescrypt::decrypt` work on any bytes in memory. The
+output is a complete AES Crypt stream: a `.aes` file's contents.
+
+```rust
+use aescry::aescrypt;
+
+let data: &[u8] = b"any bytes: text, images, archives \x00\xff";
+
+let encrypted = aescrypt::encrypt("correct horse battery staple", data)?;
+let decrypted = aescrypt::decrypt("correct horse battery staple", &encrypted)?;
+assert_eq!(decrypted, data);
+# Ok::<(), aescry::Error>(())
+```
+
+Decryption verifies both HMACs before returning anything. A wrong password
+gives `Error::InvalidPassword`, and modified or truncated data gives
+`Error::AlteredMessage`.
+
+`Encryptor` and `Decryptor` add settings, streaming and files:
+
+```rust,no_run
+use aescry::aescrypt::{Decryptor, Encryptor, Extension};
+
+let encryptor = Encryptor::new("correct horse battery staple")?
+    .iterations(1_000_000) // PBKDF2 iterations (default 600,000)
+    .extension(Extension::new("urn:example:owner", "alice")?);
+
+encryptor.encrypt_file("report.pdf", "report.pdf.aes")?;
+
+let decryptor = Decryptor::new("correct horse battery staple")?;
+decryptor.decrypt_file("report.pdf.aes", "report-decrypted.pdf")?;
+
+// Any Read to any Write, without holding the data in memory.
+let input = std::fs::File::open("big.tar")?;
+let output = std::fs::File::create("big.tar.aes")?;
+encryptor.encrypt_stream(input, output)?;
+# Ok::<(), aescry::Error>(())
+```
+
+- `encrypt_file` and `decrypt_file` write to a temporary file and rename it
+  into place when done. A failed decryption never leaves unauthenticated
+  output behind.
+- `decrypt_stream` writes plaintext as it goes, so if it returns an error,
+  discard what it wrote.
+- `aescrypt::read_header` reads the unencrypted header: version, iteration
+  count and extensions.
+
+| Format version | Read | Write | Key derivation     | Written by                  |
+|----------------|------|-------|--------------------|-----------------------------|
+| 3              | ✓    | ✓     | PBKDF2-HMAC-SHA512 | AES Crypt 4.x               |
+| 2              | ✓    |       | 8192 × SHA-256     | AES Crypt 3.x, pyAesCrypt   |
+| 1              | ✓    |       | 8192 × SHA-256     | older AES Crypt             |
+| 0              | ✓    |       | 8192 × SHA-256     | older AES Crypt             |
+
+### Encrypting byte buffers with a raw key (AES-CBC)
 
 `cbc::encrypt` and `cbc::decrypt` take a raw key (16, 24 or 32 octets for
 AES-128, AES-192 or AES-256), a raw 16-octet IV and the data, and apply PKCS#7
@@ -200,12 +259,6 @@ let version = detect::from_reader(std::io::stdin())?;
 # Ok::<(), std::io::Error>(())
 ```
 
-| Version | Key derivation                | Notes                               |
-|---------|-------------------------------|-------------------------------------|
-| 0       | 8192 × SHA-256                | No session key                      |
-| 1       | 8192 × SHA-256                | Encrypted session IV and key        |
-| 2       | 8192 × SHA-256                | Adds header extensions              |
-| 3       | PBKDF2-HMAC-SHA512            | Current format; PKCS#7 padding      |
 
 ## Security
 
@@ -217,6 +270,11 @@ let version = detect::from_reader(std::io::stdin())?;
   precisely, for example another tenant on the same machine. A hardware-backed,
   constant-time backend is planned.
 - `Debug` output of cipher, hash and MAC types never includes key material.
+- AES Crypt header extensions are neither encrypted nor authenticated. Don't
+  trust their contents.
+- Version 3 streams asking for more than 5,000,000 PBKDF2 iterations are
+  refused, so a hostile file can't tie up the CPU for long.
+  `Decryptor::max_iterations` lowers the limit.
 - `Hmac::verify` compares tags in constant time. `Hmac::verify_truncated`
   refuses tags shorter than 80 bits.
 
@@ -245,7 +303,10 @@ Tests cover:
   [`tests/data/rustcrypto`](tests/data/rustcrypto)): NESSIE AES, NIST CAVP
   CBC, SHA-2 known answers, HMAC from RFC 4231 and Project Wycheproof, and
   PBKDF2;
-- cross-checks against OpenSSL and Python's `hashlib`.
+- cross-checks against OpenSSL and Python's `hashlib`;
+- AES Crypt fixtures for every format version (see
+  [`tests/data/aescrypt`](tests/data/aescrypt)), each of which the official
+  AES Crypt tool also decrypts.
 
 To test with the minimum supported Rust version, first pick dependency
 versions that support it:

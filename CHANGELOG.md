@@ -4,6 +4,39 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - Unreleased
+
+The AES Crypt file format.
+
+### Added
+- `aescrypt` module: password-based encryption in the AES Crypt format.
+  - `encrypt` / `decrypt` for data in memory. Decryption verifies both HMACs
+    before returning plaintext.
+  - `Encryptor` writes format version 3: PBKDF2-HMAC-SHA512 with 600,000
+    iterations by default, a random session key and IV, PKCS#7 padding, and
+    `CREATED_BY` and container extensions. It has `encrypt`,
+    `encrypt_stream` (any `Read` to any `Write`) and `encrypt_file`.
+  - `Decryptor` reads format versions 0–3, with `decrypt`, `decrypt_stream`
+    and `decrypt_file`. Iteration counts above 5,000,000 (or a lower
+    `max_iterations`) are refused.
+  - File output goes to a temporary file that is renamed into place only on
+    success.
+  - `read_header`, `Header` and `Extension` for inspecting the unencrypted
+    header.
+- `Error` variants: `EmptyPassword`, `InvalidPassword`, `AlteredMessage`,
+  `NotAesCrypt`, `UnsupportedVersion`, `InvalidStream`, `InvalidExtension`
+  and `InvalidPath`.
+- Fixtures for every format version, all verified with the official
+  AES Crypt 4.7 tool. Versions 0–2 are written by an independent Python
+  implementation included with the fixtures.
+- Tests for tampering at every octet, truncation, excessive iteration counts,
+  streaming with tiny reads, and file handling.
+
+### Compatibility
+- Checked against the official AES Crypt 4.7 command-line tool in both
+  directions (version 3, many sizes, Unicode passwords, default and custom
+  iteration counts) and against pyAesCrypt (version 2).
+
 ## [0.4.0] - Unreleased
 
 Integrity and key derivation.
@@ -82,6 +115,7 @@ First release. The existing primitives are now a public API.
 ### Removed
 - The unused `AesFileData` and `Extension` placeholder types.
 
+[0.5.0]: https://github.com/danielpclark/aescry/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danielpclark/aescry/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danielpclark/aescry/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/danielpclark/aescry/releases/tag/v0.2.0
