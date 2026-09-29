@@ -1,82 +1,131 @@
 # aescry
 
-A Rust library for detecting files encrypted in the
-[AES Crypt](https://www.aescrypt.com/aes_file_format.html) file format, with
-the goal of supporting encryption and decryption of those files.
+AES encryption and decryption for Rust, with support for the
+[AES Crypt](https://www.aescrypt.com/aes_stream_format.html) file format.
 
-> **Status:** early development. File detection is available today. The
-> AES-128/192/256 block cipher and SHA-256 implementations that encryption and
-> decryption will be built on are implemented and tested inside the crate, but
-> are not yet part of the public API.
+`aescry` implements its cryptography in pure Rust with no dependencies:
+
+- **`aes`**: the AES-128, AES-192 and AES-256 block cipher (FIPS-197)
+- **`sha256`**: SHA-256 (FIPS 180-2)
+- **`detect`**: detection of AES Crypt files and streams (format versions 0–3)
 
 ## Installation
 
-`aescry` is not yet published on crates.io. Add it to your `Cargo.toml` as a
-git dependency:
-
 ```toml
 [dependencies]
-aescry = { git = "https://github.com/danielpclark/aescry" }
+aescry = "0.2"
 ```
+
+`aescry` requires Rust 1.63 or newer.
 
 ## Usage
 
-### Detecting an AES Crypt file
+### AES block cipher
 
-`aescry::detect::get_file` takes a path and returns `Some(AesFile)` if the file
-starts with a valid AES Crypt header, or `None` otherwise.
+Each cipher type encrypts and decrypts single 16-octet blocks in place. Use
+`Aes128`, `Aes192` or `Aes256` when the key size is known at compile time, or
+`Aes` to choose it at runtime from the key's length.
+
+```rust
+use aescry::aes::{Aes, Aes256, BlockCipher};
+
+let key = [0x42u8; 32];
+let cipher = Aes256::new(&key);
+
+let mut block = *b"exactly 16 bytes";
+cipher.encrypt_block(&mut block);
+assert_ne!(&block, b"exactly 16 bytes");
+
+cipher.decrypt_block(&mut block);
+assert_eq!(&block, b"exactly 16 bytes");
+
+// Key size chosen at runtime: 16, 24 or 32 octets.
+let cipher = Aes::new(&key[..16])?;
+assert_eq!(cipher.key_size(), 16);
+assert!(Aes::new(&key[..20]).is_err());
+# Ok::<(), aescry::Error>(())
+```
+
+> **Note:** encrypting blocks one at a time with the same key (ECB mode)
+> reveals which blocks are equal. The block cipher is a building block for
+> modes like CBC. It is not a way to encrypt messages on its own.
+
+### SHA-256
+
+```rust
+use aescry::sha256::{sha256, Sha256};
+
+let digest = sha256(b"abc");
+
+let mut hasher = Sha256::new();
+hasher.update(b"a");
+hasher.update(b"bc");
+assert_eq!(hasher.finalize(), digest);
+```
+
+### Detecting AES Crypt files
+
+Detection checks for the `AES` magic octets, a known format version and, when
+the length is known, the minimum length of a valid stream of that version.
 
 ```rust,no_run
 use aescry::detect;
 
-fn main() {
-    match detect::get_file("secrets.txt.aes") {
-        Some(file) => {
-            println!("{} is AES Crypt format version {}", file.path(), file.version());
-        }
-        None => println!("not an AES Crypt file"),
-    }
+// From a file on disk; returns None instead of an error.
+if let Some(file) = detect::get_file("secrets.txt.aes") {
+    println!("{} uses {}", file.path().display(), file.version());
 }
+
+// From a file, keeping I/O errors.
+let version = detect::from_file("secrets.txt.aes")?;
+
+// From bytes already in memory.
+let data = std::fs::read("secrets.txt.aes")?;
+if let Some(version) = detect::from_bytes(&data) {
+    println!("version {}", version.as_u8());
+}
+
+// From any reader (reads only the 4-octet header).
+let version = detect::from_reader(std::io::stdin())?;
+# Ok::<(), std::io::Error>(())
 ```
 
-`get_file` returns `None` (it never panics) when:
+| Version | Key derivation                | Notes                               |
+|---------|-------------------------------|-------------------------------------|
+| 0       | 8192 × SHA-256                | No session key                      |
+| 1       | 8192 × SHA-256                | Encrypted session IV and key        |
+| 2       | 8192 × SHA-256                | Adds header extensions              |
+| 3       | PBKDF2-HMAC-SHA512            | Current format; PKCS#7 padding      |
 
-- the file can't be opened (missing, permission denied, …),
-- it doesn't begin with the `AES` magic bytes,
-- it's too short to contain a version byte, or
-- the version byte isn't a known format version.
+## Security
 
-### `AesFile`
+- The AES implementation uses lookup tables indexed by secret data. Its
+  timing can leak information about the key to an attacker who can measure it
+  precisely, for example another tenant on the same machine. A hardware-backed,
+  constant-time backend is planned.
+- `Debug` output of cipher types never includes key material.
 
-| Method      | Returns | Description                                         |
-|-------------|---------|-----------------------------------------------------|
-| `version()` | `u8`    | The AES Crypt format version from the header.       |
-| `path()`    | `&str`  | The path that was passed to `detect::get_file`.     |
+## Roadmap
 
-## Supported file format versions
-
-Every AES Crypt file starts with the three bytes `AES` followed by a one-byte
-version number:
-
-| Version | Layout summary                                                                                              |
-|---------|-------------------------------------------------------------------------------------------------------------|
-| `0`     | Header, file size mod 16, IV, encrypted message, HMAC.                                                      |
-| `1`     | Header, IV, encrypted IV + 256-bit key, HMAC, encrypted message, file size mod 16, HMAC.                    |
-| `2`     | Like version 1, plus a block of extensions (e.g. `CREATED_BY`) after the header.                            |
-
-See the [AES Crypt file format specification](https://www.aescrypt.com/aes_file_format.html)
-for the full layout of each version.
+| Version       | Feature set                                                                                       |
+|---------------|---------------------------------------------------------------------------------------------------|
+| 0.2           | Core primitives: AES block cipher, SHA-256, AES Crypt detection                                   |
+| 0.3           | Encrypting byte buffers: CBC mode, PKCS#7 padding, secure random keys and IVs                     |
+| 0.4           | Integrity and key derivation: SHA-512, HMAC, constant-time comparison, PBKDF2                     |
+| 0.5           | AES Crypt file format: password-based encryption and decryption of buffers, streams and files     |
+| 0.6           | Hardening: hardware AES (AES-NI) backend and wiping secrets from memory                           |
+| 1.0.0-beta.1  | Security toolkit: raw-byte passwords, IVs and keys; stream inspection and verification            |
 
 ## Development
 
 ```sh
-cargo build
-cargo test            # use --release for a faster run of the AES Monte Carlo tests
+cargo test
+cargo test --release   # faster run of the AES Monte Carlo tests
 ```
 
-The test suite checks the AES implementation against the FIPS-197 examples
-and the Rijndael Monte Carlo (ECB) tests, and checks SHA-256 against the
-FIPS 180-2 examples.
+Tests cover the FIPS-197 examples, the Rijndael Monte Carlo tests and the
+NESSIE AES vectors from the [RustCrypto](https://github.com/RustCrypto) project
+(see [`tests/data/rustcrypto`](tests/data/rustcrypto)).
 
 ## License
 

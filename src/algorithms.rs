@@ -14,6 +14,7 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
     data[index + 3] = state as u8;
 }
 
+#[cfg(test)]
 #[inline(always)] pub(crate) fn xtime(x: u8) -> u8 {
     ( x << 1 ) ^ (
         if ( x & 0x80 ) != 0 {
@@ -24,8 +25,8 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
     )
 }
 
-#[inline(always)] pub(crate) fn rotr8(x: u32) -> u32 {  ( ( x.wrapping_shl(24) ) & 0xFFFFFFFF )
-                                              | ( ( x & 0xFFFFFFFF ).wrapping_shr(8) ) }
+#[cfg(test)]
+#[inline(always)] pub(crate) fn rotr8(x: u32) -> u32 { x.rotate_right(8) }
 
 // SHRⁿ(x) = x >> n
 #[inline(always)] fn shr(x: u32, n: u32)  -> u32 { (x).wrapping_shr(n)    }
@@ -53,6 +54,7 @@ pub(crate) fn put_u32(state: u32, data: &mut [u8], index: usize) {
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn p(a: u32, b: u32, c: u32, d: &mut u32, e: u32, f: u32, g: u32, h: &mut u32, x: u32, k: u32) {
     let temp1 = (*h).wrapping_add(s3(e)).wrapping_add(ch(e,f,g)).wrapping_add(k).wrapping_add(x);
     let temp2 = s2(a).wrapping_add(maj(a,b,c));
