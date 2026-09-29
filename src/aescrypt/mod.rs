@@ -104,6 +104,7 @@ pub struct Encryptor {
     iterations: Iterations,
     extensions: Vec<Extension>,
     default_extensions: bool,
+    constant_time: bool,
 }
 
 impl core::fmt::Debug for Encryptor {
@@ -113,6 +114,7 @@ impl core::fmt::Debug for Encryptor {
             .field("iterations", &self.iterations)
             .field("extensions", &self.extensions)
             .field("default_extensions", &self.default_extensions)
+            .field("constant_time", &self.constant_time)
             .finish()
     }
 }
@@ -125,6 +127,7 @@ impl Encryptor {
             iterations: Iterations::DEFAULT,
             extensions: Vec::new(),
             default_extensions: true,
+            constant_time: false,
         })
     }
 
@@ -148,6 +151,15 @@ impl Encryptor {
         self
     }
 
+    /// Refuse to encrypt (with [`Error::BackendUnavailable`]) unless AES can
+    /// run in constant time on this CPU, instead of falling back to the
+    /// table-based software backend.  See
+    /// [`Backend::constant_time`](crate::aes::Backend::constant_time).
+    pub fn require_constant_time(mut self) -> Self {
+        self.constant_time = true;
+        self
+    }
+
     fn all_extensions(&self) -> Result<Vec<Extension>, Error> {
         let mut extensions = Vec::with_capacity(self.extensions.len().saturating_add(2));
 
@@ -163,6 +175,9 @@ impl Encryptor {
     }
 
     fn stream<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<u64, Error> {
+        if self.constant_time {
+            crate::aes::Backend::constant_time()?;
+        }
         let extensions = self.all_extensions()?;
         let session_key = SessionKey::generate()?;
         let params = EncryptParams {
@@ -205,18 +220,23 @@ impl Encryptor {
 pub struct Decryptor {
     password: Password,
     limits: Limits,
+    constant_time: bool,
 }
 
 impl core::fmt::Debug for Decryptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Decryptor").field("password", &self.password).field("limits", &self.limits).finish()
+        f.debug_struct("Decryptor")
+            .field("password", &self.password)
+            .field("limits", &self.limits)
+            .field("constant_time", &self.constant_time)
+            .finish()
     }
 }
 
 impl Decryptor {
     /// Create a decryptor for a non-empty text password.
     pub fn new(password: &str) -> Result<Self, Error> {
-        Ok(Decryptor { password: Password::new(password)?, limits: Limits::DEFAULT })
+        Ok(Decryptor { password: Password::new(password)?, limits: Limits::DEFAULT, constant_time: false })
     }
 
     /// Use stricter resource limits.  Each limit can only be lowered from
@@ -227,7 +247,18 @@ impl Decryptor {
         self
     }
 
+    /// Refuse to decrypt (with [`Error::BackendUnavailable`]) unless AES can
+    /// run in constant time on this CPU.  See
+    /// [`Encryptor::require_constant_time`].
+    pub fn require_constant_time(mut self) -> Self {
+        self.constant_time = true;
+        self
+    }
+
     fn stream<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<DecryptInfo, Error> {
+        if self.constant_time {
+            crate::aes::Backend::constant_time()?;
+        }
         let options = DecryptOptions::verified(self.limits);
         decrypt_engine(DecryptKey::Password(&self.password), &options, reader, writer)
     }

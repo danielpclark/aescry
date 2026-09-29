@@ -449,6 +449,7 @@ fn hostile_input_never_panics() {
             DecryptKey::Password(p) => DecryptKey::Password(p.clone_secret()),
             DecryptKey::Derived(k) => DecryptKey::Derived(k.clone_secret()),
             DecryptKey::Session(iv, k) => DecryptKey::Session(*iv, k.clone_secret()),
+            _ => continue,
         };
         let decryptor = RawDecryptor::new(checked).limits(small);
         let _ = decryptor.decrypt(&data);
